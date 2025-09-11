@@ -1,18 +1,18 @@
 import json
-from emalign.arrays.overlap import get_overlap
 import networkx as nx
 import numpy as np
-import os
 import pandas as pd
 
 from concurrent import futures
 from itertools import combinations
 from glob import glob
-from tqdm import tqdm
 
 from emprocess.utils.io import load_tif
+from emprocess.utils.io import get_dataset_attributes
+from emalign.io.store import find_ref_slice
 from ..arrays.sift import estimate_transform_sift
 from ..arrays.stacks import Stack
+from ..arrays.utils import downsample
 from ..visualize.nglancer import add_layers, start_nglancer_viewer
 from ..align_z.utils import get_ordered_datasets
 

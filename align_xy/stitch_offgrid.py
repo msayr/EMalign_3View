@@ -36,17 +36,19 @@ def get_elastic_mesh(pre,
                             (stride,stride), batch_size=256,
                             pre_mask=~pre_mask, 
                             post_mask=~post_mask)
+    x = mask_to_mesh(post_mask, flow.shape[-2:])
 
     # Clean flow
     pad = patch_size // 2 // stride
     flow = np.pad(flow, [[0, 0], [pad, pad - 1], [pad, pad - 1]], constant_values=np.nan)
+    x = np.pad(x, [[0, 0], [0, 0], [pad, pad - 1], [pad, pad - 1]], constant_values=np.nan)
+
     kwargs = {"min_peak_ratio": 1.4, "min_peak_sharpness": 1.4, "max_deviation": 5, "max_magnitude": 0}
     flow = flow_utils.clean_flow(flow[:, None, ...], **kwargs)
 
     mesh_config = mesh.IntegrationConfig(dt=0.001, gamma=gamma, k0=k0, k=k, stride=(stride, stride), num_iters=1000,
                                             max_iters=100000, stop_v_max=0.005, dt_max=1000, start_cap=0.01,
                                             final_cap=10, prefer_orig_order=False)
-    x = mask_to_mesh(post_mask, stride)
     x, _, _ = mesh.relax_mesh(jnp.array(x), -flow, mesh_config)
     return np.array(x)[:,0,...]
 
@@ -147,7 +149,7 @@ def stitch_images(img1,
     mask2 = mask2.astype(bool)
 
     # Estimate and apply transformation to reference image
-    M, img1_shape, img2_offset, _= estimate_transform_sift(img2, img1, scale)   
+    M, img1_shape, img2_offset, _, _ = estimate_transform_sift(img2, img1, scale, refine_estimate=True)   
     img1 = cv2.warpAffine(img1, M, img1_shape[::-1])  
     mask1 = cv2.warpAffine(mask1.astype(np.uint8), M, img1_shape[::-1]).astype(bool)
 

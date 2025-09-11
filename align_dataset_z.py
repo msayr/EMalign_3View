@@ -22,8 +22,6 @@ from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 
 from emalign.align_z.utils import compute_alignment_path, determine_initial_offset, get_ordered_datasets
 from emalign.scripts.align_stack_z import align_stack_z
-from emalign.utils.align_z import compute_datasets_offsets
-from emalign.utils.io import get_ordered_datasets, set_dataset_attributes, get_dataset_attributes
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
@@ -33,91 +31,95 @@ logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 def align_dataset_z(config_paths,
                     config_z_path,
                     destination_path,
+                    exclude,
                     num_workers, 
                     save_downsampled,
                     no_align,
                     start_over):
-
-    # Combine the content of config files if multiple ones were provided and the projects match
-    project_name = None
-    dataset_paths = []
-    offsets = []
-    # If config_paths only has one item that is a dir, we assume it contains the config files
-    if len(config_paths) == 1 and os.path.isdir(config_paths[0]):
-        # Load dataset paths from z configs
-        output_configs_path = config_paths[0]
-        config_paths = glob(os.path.join(output_configs_path, '*.json'))
-
-        for config_path in config_paths:
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            dataset_paths.append(config['dataset_path'])
-            offsets.append(np.array(config['offset']))
-
-            if destination_path is None:
-                destination_path = config['destination_path']
-            else:
-                assert destination_path == config['destination_path'], 'Destination path does not match between provided configurations'
-
-        destination_path = os.path.abspath(destination_path)
-        project_name = os.path.basename(destination_path)
-        create_configs = False
-    else:
-        # Load dataset paths from main config files
-        output_configs_path = os.path.join(os.path.dirname(destination_path), 'config')
-        for config_path in config_paths:
-            with open(config_path, 'r') as f:
-                main_config = json.load(f)
-
-            if project_name is not None:
-                assert project_name == main_config['project_name'], 'Project names between config files are not matching'
-            else:
-                project_name = main_config['project_name']
-
-            dataset_paths += [os.path.join(main_config['output_path'], stack) for stack in main_config['stack_configs'].keys()]
-
-        destination_path = os.path.join(os.path.abspath(destination_path), project_name)            
-        create_configs = True
-
+    
+    #---------- Open/prepare configs ----------#
     # Read common Z alignments parameters
     with open(config_z_path, 'r') as f:
         config_z = json.load(f)
 
-    # Compute flow
-    stride        = config_z['stride']
-    patch_size    = config_z['patch_size']    
-    max_deviation = config_z['max_deviation']
-    max_magnitude = config_z['max_magnitude']  
+    # If config_paths only has one item that is a dir, we assume it contains the config files
+    if len(config_paths) == 1 and os.path.isdir(config_paths[0]):
+        # Load dataset paths from z configs
+        output_configs_dir = config_paths[0]
+        config_paths = glob(os.path.join(output_configs_dir, 'z*.json'))
 
-    # Mesh config
-    k0    = config_z['k0'] 
-    k     = config_z['k'] 
-    gamma = config_z['gamma']
+        if destination_path is None:
+            with open(config_paths[0], 'r') as f:
+                destination_path = os.path.abspath(json.load(f)['destination_path'])
+                project_name = destination_path.split('/')[-1]
+        else:
+            with open(config_paths[0], 'r') as f:
+                project_name = os.path.abspath(json.load(f)['destination_path']).split('/')[-1]
+            destination_path = os.path.join(os.path.abspath(destination_path), project_name)
 
-    # Compute masks 
-    filter_size = config_z['mask_filter_size']    
-    range_limit = config_z['mask_range_limit']
+        # Get list of datasets and offsets
+        datasets = []
+        z_offsets = []
+        for p in config_paths:
+            with open(p, 'r') as f:
+                config = json.load(f)
+            spec = {
+                    'driver': 'zarr',
+                    'kvstore': {
+                        'driver': 'file',
+                        'path': config['dataset_path']
+                    }
+                }
+            datasets.append(ts.open(spec).result())
+            z_offsets.append([config['z_offset']] + config['xy_offset'])
+        z_offsets = np.array(z_offsets)
+        datasets = [datasets[i] for i in np.argsort(z_offsets[:, 0])]
+        z_offsets = z_offsets[np.argsort(z_offsets[:, 0])]
 
-    # Scale data for computations
-    scale_offset         = config_z['scale_offset']        
-    scale_flow           = config_z['scale_flow']   
-    yx_target_resolution = np.array(config_z['yx_target_resolution'])
+        yx_target_resolution = float('inf')
+        for config_path in config_paths:
+            with open(config_path, 'r') as f:
+                c = json.load(f)
+                r = c['resolution'][0] if 'resolution' in c else c['yx_target_resolution'][0]
+                yx_target_resolution = min(yx_target_resolution, r)
 
-    # To calculate offsets 
-    step_slices = config_z['step_slices']
+        create_configs = False
+    else:
+        # Load dataset paths from main config files
+        with open(config_paths[0], 'r') as f:
+            config = json.load(f)
+        project_name = config['project_name']
 
-    # Calculate yx offsets
-    datasets, z_offsets = get_ordered_datasets(dataset_paths)
+        if destination_path is None:
+            destination_path = config['output_path']
 
+        output_configs_dir = os.path.join(os.path.dirname(os.path.abspath(destination_path)), '03_config_z')
+        destination_path = os.path.join(os.path.abspath(destination_path), project_name)
+        create_configs = (not os.path.exists(output_configs_dir)) or start_over
+
+        yx_target_resolution = config['resolution'][0] if 'resolution' in config else config['yx_target_resolution'][0]
+
+        # Get list of datasets and offsets
+        datasets, z_offsets = get_ordered_datasets(config_paths, exclude=['/flow', '_mask'] + exclude)
+    
+    project_container = os.path.basename(os.path.dirname(os.path.abspath(destination_path))).rstrip('.zarr')
+    db_name=f'alignment_progress_{project_container}'
+
+    #---------- Compute alignment path and initial offset ----------#
+    # Print some info
     logging.info('Datasets Z offsets:')
     for dataset, z in zip(datasets, z_offsets):
-        logging.info(f'    {z[0]}: {dataset.kvstore.path.split('/')[-2]}')
+        yx_res = get_dataset_attributes(dataset)['resolution'][1:]
+        logging.info(f'    {z[0]} (res: {yx_res}): {dataset.kvstore.path.split('/')[-2]}')
+    yx_target_resolution = np.min(yx_target_resolution, axis=0).tolist()
+    logging.info(f'Target resolution (yx): {yx_target_resolution}\n')
     
     if create_configs or start_over:
+        # Create config files
         if start_over:
-            logging.info('Progress will be wiped and all datasets will be processed.')
+            create_configs = True
             try:
-                input('Press enter to resume or CTRL+C to abord\n')
+                input('WARNING: Progress will be wiped and all datasets will be processed.\nPress ENTER/ESC to resume or CTRL+C to abord\n')
             except KeyboardInterrupt:
                 print('\nExiting...')
                 sys.exit()
@@ -128,23 +130,85 @@ def align_dataset_z(config_paths,
                 set_dataset_attributes(dataset, attrs)
 
         logging.info('Creating Z align configuration files...')
-        logging.info(f'Configuration files will be stored at: \n    {output_configs_path}\n')
-        os.makedirs(output_configs_path, exist_ok=True)
+        logging.info(f'Configuration files will be stored at: \n    {output_configs_dir}\n')
+        logging.info('Computing alignment path...')
+        # Compute the paths. Some stacks may be disconnected in some parts of the dataset
+        root_stack, paths, reverse_order, ds_bounds = compute_alignment_path(datasets, z_offsets, target_resolution=yx_target_resolution)
+        logging.info('Computing padding...')
+        root_offset = determine_initial_offset(datasets, paths)
     
-        pad_offset = (1000,1000) # pad offsets to avoid going to negative values with drift
-        offsets = compute_datasets_offsets(datasets, 
-                                           z_offsets,
-                                           range_limit,
-                                           scale_offset, 
-                                           filter_size,
-                                           step_slices,
-                                           yx_target_resolution,
-                                           pad_offset,
-                                           num_workers)
+        pad_offset = np.array([1000,1000]) # pad offsets to correct for any drift
+        root_offset += pad_offset
+
+        align_plan = {
+            'root_stack': root_stack, 
+            'paths': paths, 
+            'reverse_order': reverse_order,
+            'root_offset': root_offset.tolist(),
+            'pad_offset': pad_offset.tolist(),
+            'yx_target_resolution': yx_target_resolution,
+            'dataset_local_bounds': ds_bounds
+        }
+        os.makedirs(output_configs_dir, exist_ok=True)
+        with open(os.path.join(output_configs_dir, '00_align_plan.json'), 'w') as f:
+            json.dump(align_plan, f, indent='')
+
+        for i, (path, order) in enumerate(zip(paths, reverse_order)):
+            for dataset_name in path:
+                idx = [os.path.basename(os.path.abspath(d.kvstore.path)) == dataset_name for d in datasets].index(True)
+                dataset = datasets[idx]
+                z_offset = int(z_offsets[idx, 0]) + ds_bounds[dataset_name][0] # z offset is not correct anymore because the bounds may have been shifted
+                config_path = os.path.join(output_configs_dir, f'z_{dataset_name}.json')
+
+                if dataset_name == path[0] and i == 0:
+                    # Very first dataset to align should be root and has no reference
+                    assert dataset_name == root_stack, f'First dataset ({dataset_name}) of the path is not the root stack ({root_stack})'
+                    first_slice = None
+                    xy_offset = list(map(int, root_offset))
+                else:
+                    first_slice = z_offset - 1 # First slice is last slice from previous dataset
+                    xy_offset = [0,0]
+            
+                config = {
+                    'destination_path': destination_path,
+                    'dataset_path': os.path.abspath(dataset.kvstore.path), 
+                    'dataset_name': dataset_name,
+                    'alignment_path': path,
+                    'reverse_order': order,
+                    'db_name': db_name,
+                    'z_offset': z_offset, 
+                    'xy_offset': xy_offset,
+                    'local_z_min': ds_bounds[dataset_name][0],
+                    'local_z_max': ds_bounds[dataset_name][1],
+                    'scale': config_z['scale_flow'], 
+                    'flow_config': config_z['flow'],
+                    'mesh_config': config_z['mesh'],
+                    'warp_config': config_z['warp'],
+                    'first_slice': first_slice,
+                    'yx_target_resolution': yx_target_resolution,
+                    'save_downsampled': save_downsampled,
+                    'num_workers': num_workers,
+                    'overwrite': False
+                    }
+                
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent='')
+        logging.info(f'Configuration files were created at {output_configs_dir}')
+        if no_align:
+            logging.info('No alignment this time!')
+            return
     else:
-        logging.info('Using existing configuration files from:\n    {output_configs_path}\n')
+        # Read configuration
+        with open(os.path.join(output_configs_dir, '00_align_plan.json'), 'r') as f:
+            align_plan = json.load(f)
+
+        root_stack = align_plan['root_stack']
+        paths = align_plan['paths']
+        reverse_order = align_plan['reverse_order']
+        root_offset = align_plan['root_offset']
+        logging.info(f'Using existing configuration files from:\n    {output_configs_dir}\n')
     
-    # Prepare the destinations
+    #---------- Prepare destinations ----------#
     # Downsampled destination will serve for inspection
     ds_project_output_path = os.path.join(os.path.dirname(destination_path), f'{save_downsampled}x_' + project_name)
     if not os.path.exists(destination_path) or start_over:
@@ -153,7 +217,8 @@ def align_dataset_z(config_paths,
         # Shape destination starts as largest yx and last offset + shape of last dataset
         # yx could change shape based on warping but z should stay like this for this project
         shapes = np.array([dataset.shape for dataset in datasets])
-        dest_shape = np.append(shapes[-1, 0] + offsets[-1, 0], shapes[:, 1:].max(0))
+        dest_shape = np.append(shapes[-1, 0] + z_offsets[-1, 0], 
+                               shapes[:, 1:].max(0))
         destination = ts.open({'driver': 'zarr',
                                'kvstore': {
                                    'driver': 'file',
@@ -169,10 +234,26 @@ def align_dataset_z(config_paths,
                                create=True,
                                delete_existing=True
                                ).result()
+        destination_mask = ts.open({'driver': 'zarr',
+                               'kvstore': {
+                                   'driver': 'file',
+                                   'path': destination_path + '_mask',
+                                           },
+                               'metadata':{
+                                   'shape': dest_shape,
+                                   'chunks':[1,512,512]
+                                           },
+                               'transform': {'input_labels': ['z', 'y', 'x']}
+                               },
+                               dtype=ts.bool, 
+                               create=True,
+                               delete_existing=True
+                               ).result()
         
         logging.info(f'Creating downsampled project dataset ({save_downsampled}) at: \n    {ds_project_output_path}\n')
         shapes = np.array([dataset.shape for dataset in datasets])//save_downsampled
-        dest_shape = np.append(shapes[-1, 0] + offsets[-1, 0], shapes[:, 1:].max(0))
+        dest_shape = np.append(shapes[-1, 0] + z_offsets[-1, 0], 
+                               shapes[:, 1:].max(0))
         ds_destination = ts.open({'driver': 'zarr',
                                'kvstore': {
                                    'driver': 'file',
@@ -198,6 +279,14 @@ def align_dataset_z(config_paths,
                             },
                             dtype=ts.uint8
                             ).result()
+        destination_mask = ts.open({'driver': 'zarr',
+                            'kvstore': {
+                                    'driver': 'file',
+                                    'path': destination_path + '_mask',
+                                        }
+                            },
+                            dtype=ts.bool
+                            ).result()
         
         logging.info(f'Opening existing downsampled project dataset ({save_downsampled}) at: \n    {ds_project_output_path}\n')
         ds_destination = ts.open({'driver': 'zarr',
@@ -208,67 +297,25 @@ def align_dataset_z(config_paths,
                             },
                             dtype=ts.uint8
                             ).result()
-    
-    # For the first dataset, there is no first reference slice
-    first_slice = None             
-    pbar_desc = 'Preparing configuration files' if no_align else 'Processing stacks'   
-    for offset, dataset in tqdm(zip(offsets, datasets), 
-                                total=len(datasets),
-                                desc=pbar_desc):
-        dataset_name = dataset.kvstore.path.split('/')[-2]
-        config_path = os.path.join(output_configs_path, 'z_' + dataset_name + '.json')
-        print(f'{dataset_name}: {config_path}')
-        if create_configs:
-            config = {'destination_path': destination.kvstore.path,
-                    'dataset_path': dataset.kvstore.path, 
-                    'offset': offset.tolist(), 
-                    'scale': scale_flow, 
-                    'stride': stride, 
-                    'patch_size': patch_size, 
-                    'max_deviation': max_deviation,
-                    'max_magnitude': max_magnitude,
-                    'k0': k0,
-                    'k': k,
-                    'gamma': gamma,
-                    'filter_size': filter_size,
-                    'range_limit': range_limit,
-                    'first_slice': first_slice,
-                    'yx_target_resolution': yx_target_resolution.tolist(),
-                    'save_downsampled': save_downsampled,
-                    'num_threads': num_workers,
-                    'overwrite': False}
-            
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent='')
-        else:
+        
+    #---------- Start alignment ----------#
+    for i, (path, order) in enumerate(zip(paths, reverse_order)):
+        for dataset_name in path:
+            config_path = os.path.join(output_configs_dir, f'z_{dataset_name}.json')
+            if dataset_name == path[0] and i == 0:
+                assert dataset_name == root_stack, f'First dataset ({dataset_name}) of the path is not the root stack ({root_stack})'
+
+            # Load configuration
             with open(config_path, 'r') as f:
                 config = json.load(f)
+            config['num_workers'] = num_workers
 
-        if not no_align:            
+            # Start alignment
             try:
-                align_stack_z(destination_path=config['destination_path'],
-                              dataset_path=config['dataset_path'], 
-                              offset=config['offset'], 
-                              scale=config['scale'], 
-                              patch_size=config['patch_size'], 
-                              stride=config['stride'], 
-                              max_deviation=config['max_deviation'],
-                              max_magnitude=config['max_magnitude'],
-                              k0=config['k0'], 
-                              k=config['k'], 
-                              gamma=config['gamma'],
-                              filter_size=config['filter_size'],
-                              range_limit=config['range_limit'],
-                              first_slice=config['first_slice'],
-                              yx_target_resolution=config['yx_target_resolution'],
-                              num_threads=config['num_threads'],
-                              save_downsampled=config['save_downsampled'],
-                              overwrite=config['overwrite'])
+                params = signature(align_stack_z).parameters
+                align_stack_z(**{k: v for k, v in config.items() if k in params})
             except Exception as e:
-                raise RuntimeError(e)
-        
-        # Set the last slice of this dataset to be the reference for the next dataset
-        first_slice = int(offset[0] + dataset.shape[0] - 1)
+                raise RuntimeError(f'Error with {dataset_name}: ' + str(e))
             
     logging.info('Done!')
     logging.info(f'Output: {destination_path}')
@@ -303,6 +350,13 @@ if __name__ == '__main__':
                         help='Path to the zarr container where the final alignment will be written.')
     
     # Not required
+    parser.add_argument('--exclude',
+                        metavar='EXCLUDE',
+                        dest='exclude',
+                        type=str,
+                        nargs='+',
+                        default=[],
+                        help='Patterns to exclude from the datasets to align.')
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
                         dest='num_workers',
@@ -314,7 +368,7 @@ if __name__ == '__main__':
                         dest='save_downsampled',
                         type=float,
                         default=10,
-                        help='Factor to use for downsampling the dataset that will be saved for inspection. Default: 4')
+                        help='Factor to use for downsampling the dataset that will be saved for inspection. Default: 10')
     parser.add_argument('--no-align',
                         dest='no_align',
                         default=False,

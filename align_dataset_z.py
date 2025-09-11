@@ -17,9 +17,11 @@ import tensorstore as ts
 import sys
 
 from glob import glob
-from tqdm import tqdm
+from inspect import signature
+from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 
-from emalign.stack_align.align_stack_z import align_stack_z
+from emalign.align_z.utils import compute_alignment_path, determine_initial_offset, get_ordered_datasets
+from emalign.scripts.align_stack_z import align_stack_z
 from emalign.utils.align_z import compute_datasets_offsets
 from emalign.utils.io import get_ordered_datasets, set_dataset_attributes, get_dataset_attributes
 

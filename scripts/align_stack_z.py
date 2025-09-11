@@ -1,28 +1,32 @@
+import inspect
 import os
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = '1'
-# os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'cuda_async'
-# os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
-os.environ['OMP_NUM_THREADS'] = '4'
-os.environ['MKL_NUM_THREADS'] = '4'
 
+from emalign.arrays.utils import downsample
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+# os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'cuda_async'
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+# os.environ['OMP_NUM_THREADS'] = '4'
+# os.environ['MKL_NUM_THREADS'] = '4'
+
+import datetime
+import cv2
 import json
 import numpy as np
 import logging
 import sys
 import tensorstore as ts
 
-from concurrent import futures
 from connectomics.common import bounding_box
-from cv2 import resize
 from tqdm import tqdm
 
-from sofima import warp, mesh
-from emalign.utils.offsets import estimate_rough_z_offset
-from emalign.utils.align_z import compute_flow_dataset, get_inv_map, get_data
-from emalign.utils.io import get_dataset_attributes, set_dataset_attributes
-from emalign.utils.tile_map_positions import estimate_transform_sift
+from sofima import mesh
+from sofima.warp import ndimage_warp
+from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
+from emprocess.utils.mask import compute_greyscale_mask
 
-from emprocess.utils.transform import rotate_image
+from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
+from emalign.io.store import find_ref_slice
+
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)

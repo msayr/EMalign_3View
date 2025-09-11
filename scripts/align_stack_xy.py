@@ -203,7 +203,7 @@ def align_stack_xy(output_path,
                                       
             pbar.set_description(f'{stack.stack_name}: Rendering...')
             parallelism = min(num_cores, len(tile_map))
-            stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks, 
+            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, meshes, render_stride, tm.tile_masks, 
                                            parallelism=parallelism, margin_overrides=margin_map, dest_mask=dataset_mask, resize_canvas=True)
             doc = {
                 'stack_name': stack.stack_name,
@@ -224,7 +224,7 @@ def align_stack_xy(output_path,
         else:
             # There is only one tile, no need to compute anything
             pbar.set_description(f'{stack.stack_name}: Writing unique tile...')
-            stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, None, None, None, parallelism=1, dest_mask=dataset_mask, resize_canvas=True)
+            dataset, dataset_mask, stitch_score = render_slice_xy(dataset, z-z_offset, tile_map, None, None, None, parallelism=1, dest_mask=dataset_mask, resize_canvas=True)
             doc = {
                 'stack_name': stack.stack_name,
                 'z': z,

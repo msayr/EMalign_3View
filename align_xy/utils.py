@@ -18,7 +18,7 @@ def mask_to_mesh(mask, yx_shape):
     x = mask[np.ix_(y_coords, x_coords)]
     x = np.repeat(x[None, None, ...], 2, axis=0).astype(np.float32) - 1 
     x[x<0] = np.nan
-    return x_target
+    return x
 
 
 def check_stitch(warped_tiles, margin):

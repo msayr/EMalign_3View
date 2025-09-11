@@ -1,6 +1,8 @@
 import os
 # To prevent running out of memory because of preallocation
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = '1'
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false' # Avoid OOM by allocating memory flexibly but may slow things down
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+os.environ['TF_CPP_MIN_LOG_LEVEL']='2' # Log only ERRORS for XLA
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'cuda_async'
 
 # Influences performance

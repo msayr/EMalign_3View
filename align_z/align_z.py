@@ -45,52 +45,271 @@ def write_trsf(dataset, arr, z):
 
 
 def _compute_flow(dataset, 
-                  offset, 
                   patch_size, 
                   stride, 
                   scale, 
-                  filter_size, 
-                  range_limit,
-                  first_slice=None,
-                  target_scale=1,
-                  rotation_angle=0):
-
-    dataset_name = dataset.kvstore.path.split('/')[-2]
-
-    if scale < 1:
-        dataset = ts.downsample(dataset, [1,
-                                         int(1/scale),
-                                         int(1/scale)], 'mean')
-
+                  db_name,
+                  original_shape=None,
+                  ignore_slices=[],
+                  destination_path=None,
+                  dataset_mask=None,
+                  ref_slice=None,
+                  ref_slice_mask=None,
+                  transformations=None,
+                  save_transform=True):
+    
     mfc = flow_field.JAXMaskedXCorrWithStatsCalculator()
+    original_shape = dataset.shape if original_shape is None else original_shape
 
-    if first_slice is None:
+    #---------- Open dataset ----------#
+    dataset_name = os.path.basename(os.path.abspath(dataset.kvstore.path))
+    if dataset_mask is None:
+        ds_mask_path = os.path.abspath(dataset.kvstore.path) + '_mask'
+        if os.path.exists(ds_mask_path):
+            dataset_mask = ts.open({
+                                'driver': 'zarr',
+                                'kvstore': {
+                                    'driver': 'file',
+                                    'path': ds_mask_path,
+                                            }
+                                    }).result()
+    if destination_path is None:
+        destination_path = os.path.dirname(os.path.abspath(dataset.kvstore.path))
+            
+    #---------- Prepare destinations ----------#
+    # Both transformations and flow are saved to file. They don't take much space but are slow to compute.
+    scale_str = str(round(scale, 2)).replace('.', '_')
+    ds_flow_path = os.path.join(destination_path,
+                                'flows',
+                                dataset_name + f'_flow{scale_str}x')
+    ds_trsf_path = os.path.join(destination_path,
+                                'flows',
+                                dataset_name + f'_transform')
+    if os.path.exists(ds_flow_path):
+        # Flow + Transformations exist
+        dataset_flow = ts.open({
+                            'driver': 'zarr',
+                            'kvstore': {
+                                'driver': 'file',
+                                'path': ds_flow_path,
+                                        }
+                                }).result()
+        attrs = get_dataset_attributes(dataset_flow)
+        assert stride == attrs['stride'], 'stride does not correspond with existing flow'
+        assert patch_size == attrs['patch_size'], 'patch_size does not correspond with existing flow'
+        assert (ref_slice is not None) == attrs['external_first_slice'], 'ref slice does not correspond with existing flow'
+        
+        # If flow dataset exists but transformations is None, we assume we can find them in a dataset
+        if transformations is None:
+            dataset_trsf = ts.open({
+                                'driver': 'zarr',
+                                'kvstore': {
+                                    'driver': 'file',
+                                    'path': ds_trsf_path,
+                                            }
+                                    }).result()
+    else:
+        # Flow + Transformations are to be created from scratch
+        dataset_flow = ts.open({'driver': 'zarr',
+                                'kvstore': {
+                                    'driver': 'file',
+                                    'path': ds_flow_path,
+                                            },
+                                'metadata':{
+                                    'shape': [original_shape[0],4,1,1],
+                                    'chunks':[1,4,128,128]
+                                            },
+                                'transform': {'input_labels': ['z', 'c', 'y', 'x']}
+                                },
+                                dtype=ts.float32,
+                                fill_value=np.nan,
+                                create=True
+                                ).result()
+        attrs = {
+            'dataset_path': os.path.abspath(dataset.kvstore.path),
+            'patch_size': patch_size,
+            'stride': stride,
+            'scale': scale,
+            'external_first_slice': ref_slice is not None
+                }
+        set_dataset_attributes(dataset_flow, attrs)
+        
+        # No transformation exist, we will compute it
+        if transformations is None:
+            dataset_trsf = ts.open({'driver': 'zarr',
+                                    'kvstore': {
+                                        'driver': 'file',
+                                        'path': ds_trsf_path,
+                                                },
+                                    'metadata':{
+                                        'shape': [original_shape[0],2,4],
+                                        'chunks':[1,2,4]
+                                                },
+                                    'transform': {'input_labels': ['z', 'a', 'b']}
+                                    },
+                                    dtype=ts.float32,
+                                    create=True
+                                    ).result()
+            attrs = {
+                'dataset_path': os.path.abspath(dataset.kvstore.path),
+                'scale': scale,
+                'external_first_slice': ref_slice is not None
+                    }
+            set_dataset_attributes(dataset_trsf, attrs)
+    
+    #---------- Prepare MongoDB ----------#
+    # Track progress
+    db_host=None
+    collection_name=f'FLOW_{scale_str}x_' + dataset_name
+    client = MongoClient(db_host)
+    db = client[db_name]
+    collection_progress = db[collection_name]
+
+    n_docs = dataset.shape[0] - int(ref_slice is None)
+    if collection_progress.count_documents({'stack_name': dataset_name, 'scale': scale}) == n_docs:
+        flows = np.transpose(dataset_flow.read().result(), [1, 0, 2, 3])
+        if transformations is None:
+            transform = dataset_trsf.read().result()
+        else:
+            transform = transformations
+        return flows, transform
+        
+    #---------- Start processing ----------#
+    # Get reference slice
+    if ref_slice is None:
         # Use dataset's first slice to compute flow from.
-        start = 1
-        prev = get_data_slice(dataset, start-1, offset, target_scale)
-
-        while not prev.any():
-            start += 1
-            prev = get_data_slice(dataset, start-1, offset, target_scale)
+        prev, z = find_ref_slice(dataset, 
+                                  dataset.domain.inclusive_min[0], 
+                                  reverse=False)
+        if dataset_mask is not None:
+            prev_mask = dataset_mask[z].read().result()
+        else:
+            prev_mask = compute_greyscale_mask(prev)  
+        # Downsample if needed
+        prev = downsample(prev, scale)
+        prev_mask = downsample(prev_mask, scale)
+        z_prev = z
+        start = z + 1      
     else:
         # Use provided first slice to compute flow from. Could be slice of a previous dataset
-        start = 0
-        prev = resize(first_slice, None, fx=scale, fy=scale) if scale<1 else first_slice
-    
-    prev_mask = compute_mask(prev, filter_size, range_limit)
+        # We assume that the reference slice is already at the right scale
+        start = dataset.domain.inclusive_min[0]
+        prev = ref_slice
+        prev_mask = ref_slice_mask
+        z_prev = start
 
+    # Iterate through slices 
     flows = []
-    for z in tqdm(range(start, dataset.shape[0]),
-                    position=0,
-                    desc=f'{dataset_name}: Computing flow (scale={scale})'):
-        curr = get_data_slice(dataset, z, offset, target_scale, rotation_angle=rotation_angle)
+    transform = np.zeros([original_shape[0],2,4], dtype=np.float32)
+    pickup_progress = False
+    pbar = tqdm(range(start, dataset.domain.exclusive_max[0]), position=0)
+    for z in pbar:
+        ##### CHECKPOINT #####
+        if check_progress({'stack_name': dataset_name, 'z': z, 'scale': scale}, db_host, db_name, collection_name):
+            # If slice was processed, we read the flow and transform, or get transform from input
+            pbar.set_description(f'{dataset_name}: Skipping...')
+            pickup_progress = True # Get ref for first valid slice
+            flows.append(dataset_flow[z].read().result())
+            if transformations is None:
+                transform[z] = dataset_trsf[z].read().result()
+            else:
+                transform[z] = transformations[z]
+            continue
+        elif z != start and pickup_progress:
+            # First unprocessed slice after checkpoint. We need a reference slice.
+            pickup_progress = False # No need to visit this segment anymore
 
-        if not curr.any():
-            # If empty slice, compare to the next one
+            prev, z_prev = find_ref_slice(dataset, 
+                                          z-1, 
+                                          reverse=True)
+            prev = downsample(prev, scale)
+            pbar.set_description(f'Preparing previous slice ({z_prev})')
+            if dataset_mask is not None:
+                prev_mask = dataset_mask[z_prev].read().result()
+                prev_mask = downsample(prev_mask, scale)
+            else:
+                prev_mask = compute_greyscale_mask(prev)
+
+            if transformations is None:
+                t = dataset_trsf[z_prev].read().result()                
+            else:
+                t = transformations[z_prev]
+
+            M = t[:, :-1]
+            output_shape = t[:, -1].astype(int)
+            prev = cv2.warpAffine(prev, 
+                                  M, output_shape[::-1])
+            prev_mask = cv2.warpAffine(prev_mask.astype(np.uint8), 
+                                       M, output_shape[::-1]).astype(bool)
+            sleep(3) # To make sure that we see the message (mostly for debug)
+        
+        if z in ignore_slices:
+            pbar.set_description(f'{dataset_name}: Ignoring slice...')
+            # Slice is to ignore for flow computation based on user input, but we will keep it otherwise
+            # We reuse the previous flow for alignment
+            if z != start:
+                flows.append(flow)
+                dataset_flow, _ = write_flow(dataset_flow, flow, z)
+                if save_transform:
+                    dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
+
+            # Log progress
+            doc = {
+                'stack_name': dataset_name,
+                'z': z,
+                'z_prev': z_prev,
+                'skipped': True,
+                'scale': scale
+                    }
+            collection_progress.insert_one(doc)
             continue
 
+        ##### MAIN LOOP #####
+        pbar.set_description(f'{dataset_name}: Computing flow (scale={scale})')
+        curr = dataset[z].read().result()
+        
+        # If empty slice, skip and compare to next one
+        if not curr.any():
+            # Log progress
+            doc = {
+                'stack_name': dataset_name,
+                'z': z,
+                'z_prev': z_prev,
+                'skipped': True,
+                'scale': scale
+                    }
+            collection_progress.insert_one(doc)
+            continue
+        
+        curr = downsample(curr, scale)
+
+        # If no mask exists, compute it
+        if dataset_mask is not None:
+            curr_mask = dataset_mask[z].read().result()
+            curr_mask = downsample(curr_mask, scale)
+        else:
+            curr_mask = compute_greyscale_mask(curr)
+        
+        # Transform curr to match prev
+        if transformations is None:
+            M, output_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(prev, curr, 0.1/scale, refine_estimate=True)
+            if not valid_estimate:
+                M, output_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(prev, curr, 0.3/scale, refine_estimate=True)
+            ref_offset = ref_offset.tolist()
+            valid_estimate = bool(valid_estimate)
+        else:
+            M = transformations[z][:, :-1]
+            output_shape = transformations[z][:, -1].astype(int)
+            ref_offset = None 
+            valid_estimate = None
+        t = np.concatenate([M, output_shape[None].T], axis=1).astype(np.float32)
+        transform[z] = t
+
+        # Warp data
+        curr = cv2.warpAffine(curr, M, output_shape[::-1])
+        curr_mask = cv2.warpAffine(curr_mask.astype(np.uint8), M, output_shape[::-1]).astype(bool)
+
         try:
-            # if z == 0:
             # Different shapes may cause issues so we need to bring prev to the right shape without losing info
             # Note that we don't want to change the shape of curr if we can avoid it because then we'd have to keep track for 
             # the whole pipeline since the flow shape will have changed too.
@@ -105,26 +324,48 @@ def _compute_flow(dataset,
                 y,x = curr.shape
                 prev = prev[:y, :x]
                 prev_mask = prev_mask[:y, :x]
-
-            # First slice comes from a different dataset which may have black tiles
-            # We use masks to ensure that only regions with data are used to compute the match
-            curr_mask = compute_mask(curr, filter_size, range_limit)
-
+                
+            assert (np.array(prev.shape) == np.array(curr.shape)).all()
+            assert (np.array(prev_mask.shape) == np.array(curr_mask.shape)).all()
+            assert np.any(prev_mask & curr_mask)
+            # Compute flow
             flow = mfc.flow_field(prev, curr, (patch_size, patch_size),
-                                    (stride, stride), batch_size=256,
-                                    pre_mask=prev_mask, post_mask=curr_mask)
-            # else:
-            #     # We could use masks here too, but slices within a dataset match fairly well already and computing masks takes time
-            #     flow = mfc.flow_field(prev, curr, (patch_size, patch_size),
-            #                             (stride, stride), batch_size=512)
+                                  (stride, stride), batch_size=128,
+                                  pre_mask=~prev_mask, post_mask=~curr_mask)
+            # Save to file + database
             flows.append(flow)
 
-            prev = curr
-            prev_mask = curr_mask
+            dataset_flow, _ = write_flow(dataset_flow, flow, z)
+            if save_transform:
+                dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
+
+            # Log progress
+            doc = {
+                'stack_name': dataset_name,
+                'z': z,
+                'z_prev': z_prev,
+                'flow_parameters':{
+                                'stride':stride,
+                                'patch_size':patch_size
+                                },
+                'ref_offset': ref_offset, 
+                'valid_estimate': valid_estimate,
+                'scale': scale,
+                'skipped': False
+                    }
+            collection_progress.insert_one(doc)
+            
+            prev = curr.copy()
+            prev_mask = curr_mask.copy()
+            z_prev = z
         except Exception as e:
             raise RuntimeError(e)
+        
     jax.clear_caches()
-    return np.transpose(np.array(flows), [1, 0, 2, 3]) # [channels, z, y, x]
+
+    flows = homogenize_arrays_shape(flows, pad_value=np.nan)
+    flows = np.transpose(flows, [1, 0, 2, 3]) # [channels, z, y, x]
+    return flows, transform
 
 
 def compute_flow_dataset(dataset, 

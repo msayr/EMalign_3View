@@ -1,6 +1,15 @@
 import cv2
 import numpy as np
 
+def downsample(array, ratio):
+    if ratio == 1:
+        return array
+    
+    if array.dtype == bool:
+        array = cv2.resize(array.astype(np.uint8), None, fx=ratio, fy=ratio).astype(bool)
+    else:
+        array = cv2.resize(array, None, fx=ratio, fy=ratio)
+    return array
 
 # PAD
 def xy_offset_to_pad(offset):
@@ -20,28 +29,63 @@ def xy_offset_to_pad(offset):
     return pad
 
 
-def pad_to_shape(array, 
-                 target_shape, 
-                 direction=[1,1], 
-                 pad_value=0):
+def pad_to_shape(array, target_shape, direction=None, axis=None, pad_value=0):
     '''
-    Pad an array to match a shape. If the target shape is smaller than the array's shape in a dimension, no padding is added to that dimension.
+    Pad an array to match a shape along specified axes. If the target shape is smaller 
+    than the array's shape in a dimension, no padding is added to that dimension.
+    
+    Parameters:
+    -----------
+    array : np.ndarray
+        Input array to pad
+    target_shape : list or tuple
+        Target shape for the specified axes
+    direction : list
+        Direction to pad for each axis (0=left/start, 1=right/end)
+    axis : list
+        Axes to apply padding to (supports negative indexing)
+    pad_value : 
+        Value to use for padding
+        
+    Returns:
+    --------
+    np.ndarray
+        Padded array
     '''
-    assert array.ndim == len(target_shape)
+    # Convert axis to positive indices and validate
+    if axis is not None:
+        axis = np.array(axis)
+        axis = np.where(axis < 0, array.ndim + axis, axis)
+    else:
+        axis=np.arange(0, array.ndim)
 
-    pad_size = target_shape-np.array(array.shape)
-    pad_size[pad_size<0] = 0
+    if direction is None:
+        direction = np.ones_like(axis)
 
-    pad = np.zeros([2,2]).astype(int)
-    for i, d in enumerate(direction):
-        d = max(0, d)
-        pad[i][d] = pad_size[i]
-    return np.pad(array, pad, constant_values=pad_value)
+    # Validate inputs
+    assert len(target_shape) == len(axis), 'Target_shape length must match axis length'
+    assert len(direction) == len(axis), 'Direction length must match axis length'
+    assert all(0 <= ax < array.ndim for ax in axis), 'Axis indices out of bounds'
+    
+    # Calculate padding needed for each specified axis
+    pad_sizes = np.array(target_shape) - np.array(array.shape)[axis]
+    pad_sizes = np.max([pad_sizes, np.zeros_like(pad_sizes)], axis=0)  # No negative padding
+    
+    # Create padding specification for np.pad
+    pad_width = np.zeros((array.ndim, 2), dtype=int)
+    for i, (ax, pad_size, dir_val) in enumerate(zip(axis, pad_sizes, direction)):
+        if pad_size > 0:
+            if dir_val == 0:  # Pad at start
+                pad_width[ax, 0] = pad_size
+            else:  # Pad at end (default)
+                pad_width[ax, 1] = pad_size
+    
+    return np.pad(array, pad_width, constant_values=pad_value)
 
 
-def homogenize_arrays_shape(arrs):
+def homogenize_arrays_shape(arrs, pad_value=0):
     max_shape = np.max([a.shape for a in arrs],axis=0)
-    return [pad_to_shape(a, max_shape) for a in arrs]
+    return np.array([pad_to_shape(a, max_shape, pad_value=pad_value) for a in arrs])
 
 
 # ASSESS QUALITY

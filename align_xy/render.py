@@ -71,9 +71,9 @@ def render_slice_xy(destination,
     if return_render:
         return stitched, stitch_score
     else:
-        write_slice(destination, stitched, z)
+        destination, _ = write_slice(destination, stitched, z)
 
         if dest_mask is not None:
-            write_slice(dest_mask, mask, z)
-
-        return stitch_score
+            dest_mask, _ = write_slice(dest_mask, mask, z)
+            return destination, dest_mask, stitch_score
+        return destination, stitch_score

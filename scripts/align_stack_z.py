@@ -313,18 +313,19 @@ def align_stack_z(destination_path,
         # Writing bounding box
         y1, y2, x1, x2 = mask_to_bbox(aligned_mask)
         
-        write_data(destination, 
-                   aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
-                   z + z_offset - dataset.domain.inclusive_min[0], # z_offset relates to original minimum
-                   aligned_mask[y1:y2, x1:x2], # Mask where to write the data
-                   np.abs(xy_offset) + np.array([x1, y1]), # Only write in the bounding box where the data is
-                   save_downsampled, ds_destination)
-        write_data(destination_mask, 
-                   aligned_mask[y1:y2, x1:x2], 
-                   z + z_offset - dataset.domain.inclusive_min[0], 
-                   aligned_mask[y1:y2, x1:x2],
-                   np.abs(xy_offset) + np.array([x1, y1]), 
-                   1, None)
+        destination, ds_destination, _ = write_data(destination, 
+                                                    aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
+                                                    z + z_offset - dataset.domain.inclusive_min[0], # z_offset relates to original minimum
+                                                    aligned_mask[y1:y2, x1:x2], # Mask where to write the data
+                                                    np.abs(xy_offset) + np.array([x1, y1]), # Only write in the bounding box where the data is
+                                                    save_downsampled, ds_destination)
+        destination_mask, _ = write_data(destination_mask, 
+                                         aligned_mask[y1:y2, x1:x2], 
+                                         z + z_offset - dataset.domain.inclusive_min[0], 
+                                         aligned_mask[y1:y2, x1:x2],
+                                         np.abs(xy_offset) + np.array([x1, y1]), 
+                                         1, None)
+        
     logging.info(f'{dataset_name}: Done. ({skipped} empty slices)')
 
     # Add an attribute to keep track of what datasets have been aligned already
@@ -358,12 +359,13 @@ def write_data(destination, data, z, mask=None, xy_offset=[0,0], save_downsample
         y,x = ds_data.shape
         x_off, y_off = xy_offset // save_downsampled
         if np.any(ds_destination.domain.exclusive_max < np.array([z+1, y+y_off, x+x_off])):
-            new_max = np.max([ds_destination.domain.exclusive_max, [z+1, y+y_off, x+x_off]], axis=0)
+            new_max = np.stack([ds_destination.domain.exclusive_max, [z+1, y+y_off, x+x_off]]).max(0)
             ds_destination = ds_destination.resize(exclusive_max=new_max, expand_only=True).result()
 
         tasks.append(ds_destination[z, y_off:y+y_off, x_off:x+x_off].write(ds_data).result())
-    
-    return tasks
+        return destination, ds_destination, tasks
+    else:
+        return destination, tasks
 
 if __name__ == '__main__':
 

@@ -273,6 +273,7 @@ def align_stack_z(destination_path,
         if not data.any():
             # If empty slice, skip and go to next z
             empty += 1
+            skipped += 1
             metadata = {'empty_slice': True}
             local_slice_index = z - dataset.domain.inclusive_min[0]
             log_progress(db, dataset_name, step_name, z, local_slice_index, metadata)

@@ -22,7 +22,7 @@ from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
 from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
 from emalign.io.store import find_ref_slice
-from emalign.arrays.utils import downsample
+from emalign.arrays.utils import downsample, pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
 
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +41,7 @@ def align_stack_z(destination_path,
                   warp_config,
                   first_slice,
                   yx_target_resolution,
-                  project_name,
+                  project_name='OV_0',
                   mongodb_config_filepath=None,
                   local_z_min=None,
                   local_z_max=None,
@@ -338,19 +338,31 @@ def align_stack_z(destination_path,
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3,3))
         aligned_mask = cv2.morphologyEx(aligned_mask.astype(np.uint8),cv2.MORPH_CLOSE,kernel).astype(bool)
 
-        # Writing bounding box
-        y1, y2, x1, x2 = mask_to_bbox(aligned_mask)
+        if overwrite:
+            # There may be data written to this slice so let's make sure it is overwritten
+            y1 = x1 = 0
+            y2 = destination.shape[1]
+            x2 = destination.shape[2]
+            aligned = pad_to_shape(aligned, destination.shape[1:])
+            aligned_mask = pad_to_shape(aligned_mask, destination.shape[1:])
+            write_mask = None # This means we write everything even black space
+        else:
+            # Writing bounding box
+            y1, y2, x1, x2 = mask_to_bbox(aligned_mask)
+            write_mask = aligned_mask[y1:y2, x1:x2]
         
+        # Write data
+        global_z = z + z_offset - dataset.domain.inclusive_min[0]
         write_data(destination, 
                    aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
-                   z + z_offset - dataset.domain.inclusive_min[0], # z_offset relates to original minimum
-                   aligned_mask[y1:y2, x1:x2], # Mask where to write the data
+                   global_z, # z_offset relates to original minimum
+                   write_mask, # Mask where to write the data
                    np.abs(xy_offset) + np.array([x1, y1]), # Only write in the bounding box where the data is
                    save_downsampled, ds_destination)
         write_data(destination_mask, 
                    aligned_mask[y1:y2, x1:x2], 
-                   z + z_offset - dataset.domain.inclusive_min[0], 
-                   aligned_mask[y1:y2, x1:x2],
+                   global_z, 
+                   write_mask,
                    np.abs(xy_offset) + np.array([x1, y1]), 
                    1, None)
 

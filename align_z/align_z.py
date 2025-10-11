@@ -243,7 +243,8 @@ def _compute_flow(dataset,
             if z != start:
                 flows.append(flow)
                 dataset_flow, _ = write_flow(dataset_flow, flow, z)
-                dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
+                if transformations is None:
+                    dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
 
             # Log progress
             metadata = {
@@ -329,7 +330,8 @@ def _compute_flow(dataset,
 
             # Save to file + database
             dataset_flow, _ = write_flow(dataset_flow, flow, z)
-            dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
+            if transformations is None:
+                dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
 
             # Log progress
             metadata = {
@@ -403,7 +405,6 @@ def compute_flow_dataset(dataset,
                                ref_slice=ds_ref_slice, 
                                ref_slice_mask=ds_ref_slice_mask,
                                transformations=ds_transform,
-                               save_transform=False,
                                db=db)
     assert not np.isnan(ds_flow).all()    
 

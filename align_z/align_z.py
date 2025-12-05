@@ -14,33 +14,9 @@ from sofima.mesh import velocity_verlet, inplane_force, IntegrationConfig
 from tqdm import tqdm
 
 from emprocess.utils.mask import compute_greyscale_mask
-from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
-from ..io.store import find_ref_slice, open_store
+from ..io.store import find_ref_slice, open_store, write_ndarray, get_store_attributes, set_store_attributes
 from ..arrays.utils import resample, homogenize_arrays_shape, pad_to_shape
 from ..arrays.sift import estimate_transform_sift
-
-
-def write_flow(dataset, arr, z):
-    y,x = arr.shape[-2:]
-    new_max = np.array([z+1, 4, y, x])
-    if np.any(np.array(dataset.domain.exclusive_max) < new_max):
-        new_max = np.max([dataset.domain.exclusive_max, new_max], axis=0)
-        dataset = dataset.resize(exclusive_max=new_max, expand_only=True).result()
-    try:
-        return dataset, dataset[z, :, :y, :x].write(arr).result()
-    except Exception as e:
-        raise e
-
-
-def write_trsf(dataset, arr, z):
-    new_max = np.array([z+1, 2, 4])
-    if np.any(np.array(dataset.domain.exclusive_max) < new_max):
-        new_max = np.max([dataset.domain.exclusive_max, new_max], axis=0)
-        dataset = dataset.resize(exclusive_max=new_max, expand_only=True).result()
-    try:
-        return dataset, dataset[z, :, :].write(arr).result()
-    except Exception as e:
-        raise e
 
 
 def _compute_flow(dataset,
@@ -81,7 +57,7 @@ def _compute_flow(dataset,
     if os.path.exists(ds_flow_path):
         # Flow + Transformations exist
         dataset_flow = open_store(ds_flow_path, mode='r', dtype=ts.float32)
-        attrs = get_dataset_attributes(dataset_flow)
+        attrs = get_store_attributes(dataset_flow)
         assert stride == attrs['stride'], 'stride does not correspond with existing flow'
         assert patch_size == attrs['patch_size'], 'patch_size does not correspond with existing flow'
         assert (ref_slice is not None) == attrs['external_first_slice'], 'ref slice does not correspond with existing flow'
@@ -107,7 +83,7 @@ def _compute_flow(dataset,
             'scale': scale,
             'external_first_slice': ref_slice is not None
                 }
-        set_dataset_attributes(dataset_flow, attrs)
+        set_store_attributes(dataset_flow, attrs)
         
         # No transformation exist, we will compute it
         if transformations is None:
@@ -124,7 +100,7 @@ def _compute_flow(dataset,
                 'scale': scale,
                 'external_first_slice': ref_slice is not None
                     }
-            set_dataset_attributes(dataset_trsf, attrs)
+            set_store_attributes(dataset_trsf, attrs)
     
     #---------- Check Progress ----------#
     step_name = f'flow_z'
@@ -302,9 +278,9 @@ def _compute_flow(dataset,
             flows.append(flow)
 
             # Save to file + database
-            dataset_flow, _ = write_flow(dataset_flow, flow, z)
+            dataset_flow, _ = write_ndarray(dataset_flow, flow, z, resolve=True)
             if transformations is None:
-                dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
+                dataset_trsf, _ = write_ndarray(dataset_trsf, t, z, resolve=False)
 
             # Log progress
             metadata = {

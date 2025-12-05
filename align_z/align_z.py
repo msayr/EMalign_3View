@@ -54,7 +54,8 @@ def _compute_flow(dataset,
                   dataset_mask=None,
                   ref_slice=None,
                   ref_slice_mask=None,
-                  transformations=None):
+                  transformations=None,
+                  z_offset=0):
     
     mfc = flow_field.JAXMaskedXCorrWithStatsCalculator()
     original_shape = dataset.shape if original_shape is None else original_shape
@@ -126,10 +127,10 @@ def _compute_flow(dataset,
             set_dataset_attributes(dataset_trsf, attrs)
     
     #---------- Check Progress ----------#
-    step_name = f'flow_z_{scale_str}x'
+    step_name = f'flow_z'
     collection = db[dataset_name]
     n_docs = dataset.shape[0] - int(ref_slice is None)
-    if collection.count_documents({'step_name': step_name}) >= n_docs:
+    if collection.count_documents({'step_name': step_name, 'scale': scale}) >= n_docs:
         flows = np.transpose(dataset_flow.read().result(), [1, 0, 2, 3])
         if transformations is None:
             transform = dataset_trsf.read().result()
@@ -149,8 +150,8 @@ def _compute_flow(dataset,
         else:
             prev_mask = compute_greyscale_mask(prev)  
         # Downsample if needed
-        prev = downsample(prev, scale)
-        prev_mask = downsample(prev_mask, scale)
+        prev = resample(prev, scale)
+        prev_mask = resample(prev_mask, scale)
         z_prev = z
         start = z + 1      
     else:
@@ -165,18 +166,21 @@ def _compute_flow(dataset,
     flows = []
     transform = np.zeros([original_shape[0],2,4], dtype=np.float32)
     pickup_progress = False
-    pbar = tqdm(range(start, dataset.domain.exclusive_max[0]), position=0)
+    pbar = tqdm(range(start, dataset.domain.exclusive_max[0]), position=0, dynamic_ncols=True)
     for z in pbar:
         ##### CHECKPOINT #####
-        if check_progress(db, dataset_name, step_name, z):
+        if check_progress(db, dataset_name, step_name, z, doc_filter = {'scale': scale}):
             # If slice was processed, we read the flow and transform, or get transform from input
             pbar.set_description(f'{dataset_name}: Skipping...')
             pickup_progress = True # Get ref for first valid slice
-            flows.append(dataset_flow[z].read().result())
+            flow = dataset_flow[z].read().result()
+            flows.append(flow)
             if transformations is None:
-                transform[z] = dataset_trsf[z].read().result()
+                t = dataset_trsf[z].read().result()
+                transform[z] = t
             else:
-                transform[z] = transformations[z]
+                t = transformations[z]
+                transform[z] = t
             continue
         elif z != start and pickup_progress:
             # First unprocessed slice after checkpoint. We need a reference slice.
@@ -208,23 +212,20 @@ def _compute_flow(dataset,
         
         if z in ignore_slices:
             pbar.set_description(f'{dataset_name}: Ignoring slice...')
-            # Slice is to be ignored for flow computation based on user input, but we will keep it otherwise
-            # We reuse the previous flow for alignment
+            # Slice is to be ignored for flow computation based on user input
+            # These should not be used for mesh relaxation or they will bias the result, so we set them as invalid
             if z != start:
-                flows.append(flow)
-                dataset_flow, _ = write_flow(dataset_flow, flow, z)
-                if transformations is None:
-                    dataset_trsf, _ = write_trsf(dataset_trsf, t, z)
+                flows.append(np.ones_like(flow)*np.nan)
 
             # Log progress
             metadata = {
                 'z_prev': z_prev,
+                'scale': scale,
                 'skipped': True,
-                'empty_slice': False,
-                'scale': scale
+                'empty_slice': False
             }
-            local_slice_index = z - dataset.domain.inclusive_min[0]
-            log_progress(db, dataset_name, step_name, z, local_slice_index, metadata)
+            global_z = z + z_offset - dataset.domain.inclusive_min[0]
+            log_progress(db, dataset_name, step_name, global_z, z, metadata)
             continue
 
         ##### MAIN LOOP #####
@@ -238,15 +239,15 @@ def _compute_flow(dataset,
             # Log progress
             metadata = {
                 'z_prev': z_prev,
+                'scale': scale,
                 'skipped': True,
-                'empty_slice': True,
-                'scale': scale
+                'empty_slice': True
             }
-            local_slice_index = z - dataset.domain.inclusive_min[0]
-            log_progress(db, dataset_name, step_name, z, local_slice_index, metadata)
+            global_z = z + z_offset - dataset.domain.inclusive_min[0]
+            log_progress(db, dataset_name, step_name, global_z, z, metadata)
             continue
         
-        curr = downsample(curr, scale)
+        curr = resample(curr, scale)
 
         # If no mask exists, compute it
         if dataset_mask is not None:
@@ -318,8 +319,8 @@ def _compute_flow(dataset,
                 'skipped': False,
                 'empty_slice': False,
             }
-            local_slice_index = z - dataset.domain.inclusive_min[0]
-            log_progress(db, dataset_name, step_name, z, local_slice_index, metadata)
+            global_z = z + z_offset - dataset.domain.inclusive_min[0]
+            log_progress(db, dataset_name, step_name, global_z, z, metadata)
             
             prev = curr.copy()
             prev_mask = curr_mask.copy()
@@ -347,7 +348,8 @@ def compute_flow_dataset(dataset,
                          dataset_mask=None,
                          ref_slice=None,
                          ref_slice_mask=None,
-                         target_scale=1):
+                         target_scale=1,
+                         z_offset=0):
     
     dataset_name = os.path.basename(os.path.abspath(dataset.kvstore.path))
     flow, transform = _compute_flow(dataset=dataset,
@@ -360,7 +362,8 @@ def compute_flow_dataset(dataset,
                                     scale=1*target_scale, 
                                     ref_slice=ref_slice, 
                                     ref_slice_mask=ref_slice_mask,
-                                    db=db)
+                                    db=db,
+                                    z_offset=z_offset)
     assert not np.isnan(flow).all()
 
     ds_transform = transform*np.array([[1,1,scale,scale], [1,1,scale,scale]])
@@ -377,7 +380,8 @@ def compute_flow_dataset(dataset,
                                ref_slice=ds_ref_slice, 
                                ref_slice_mask=ds_ref_slice_mask,
                                transformations=ds_transform,
-                               db=db)
+                               db=db,
+                               z_offset=z_offset)
     assert not np.isnan(ds_flow).all()    
 
     pad = patch_size // 2 // stride
@@ -402,7 +406,8 @@ def compute_flow_dataset(dataset,
                                        size=(ds_flow.shape[-1], ds_flow.shape[-2], 1))
 
     for z in tqdm(range(ds_flow.shape[1]),
-                  desc=f'{dataset_name}: Upsampling flow map'):
+                  desc=f'{dataset_name}: Upsampling flow map',
+                  dynamic_ncols=True):
         # Upsample and scale spatial components.
         resampled = map_utils.resample_map(
             ds_flow[:, z:z+1, ...],  #
@@ -425,7 +430,8 @@ def get_inv_map(flow, stride, dataset_name, mesh_config=None):
     origin = jnp.array([0., 0.])
 
     for z in tqdm(range(0, flow.shape[1]),
-                  desc=f'{dataset_name}: Relaxing mesh'):
+                  desc=f'{dataset_name}: Relaxing mesh',
+                  dynamic_ncols=True):
         prev = map_utils.compose_maps_fast(flow[:, z:z+1, ...], origin, stride,
                                            solved[-1], origin, stride)
         x, _, _ = mesh.relax_mesh(np.zeros_like(solved[0]), prev, mesh_config)

@@ -300,6 +300,11 @@ def initialize_destination_stores(destination_path, datasets, z_offsets, save_do
 
     if create_new:
         logging.info(f'Creating project dataset at: \n    {destination_path}\n')
+        if start_over:
+            logging.info(f'Previous dataset will be overwritten')
+            open_mode = 'w'
+        else:
+            open_mode = 'a'
         # Create container at destination if it doesn't exist or if user wants to start over
         # Shape destination starts as largest yx and last offset + shape of last dataset
         # yx could change shape based on warping but z should stay like this for this project
@@ -308,9 +313,9 @@ def initialize_destination_stores(destination_path, datasets, z_offsets, save_do
                                shapes[:, 1:].max(0)).tolist()
 
         destination = open_store(
-            destination_path, mode='w', dtype=ts.uint8, shape=dest_shape, chunks=CHUNK_SIZE)
+            destination_path, mode=open_mode, dtype=ts.uint8, shape=dest_shape, chunks=CHUNK_SIZE)
         destination_mask = open_store(
-            destination_path + '_mask', mode='w', dtype=ts.bool, shape=dest_shape, chunks=CHUNK_SIZE)
+            destination_path + '_mask', mode=open_mode, dtype=ts.bool, shape=dest_shape, chunks=CHUNK_SIZE)
 
         logging.info(f'Creating downsampled project dataset ({save_downsampled}) at: \n    {ds_project_output_path}\n')
         shapes_ds = np.array([dataset.shape for dataset in datasets])
@@ -319,7 +324,7 @@ def initialize_destination_stores(destination_path, datasets, z_offsets, save_do
                                   shapes_ds[:, 1:].max(0)).tolist()
 
         ds_destination = open_store(
-            ds_project_output_path, mode='w', dtype=ts.uint8, shape=dest_shape_ds, chunks=CHUNK_SIZE)
+            ds_project_output_path, mode=open_mode, dtype=ts.uint8, shape=dest_shape_ds, chunks=CHUNK_SIZE)
     else:
         logging.info(f'Opening existing project dataset at: \n    {destination_path}\n')
         destination = open_store(

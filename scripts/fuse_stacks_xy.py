@@ -299,7 +299,7 @@ def align_fused_stacks_xy(config_path,
     # Function to determine image quality to choose which one is on top
     # Highest value == on top
     # laplacian variance is sensitive to contrast and is thus weighted lower
-    img_q_fun = lambda img, m: _compute_laplacian_var(img, m)*0.5 + _compute_sobel_mean(img, m) + _compute_grad_mag(img, m)*100
+    img_q_fun = lambda img, m: compute_laplacian_var(img, m)*0.5 + compute_sobel_mean(img, m) + compute_grad_mag(img, m)*100
     
     pbar = tqdm(fused_configs, position=0, leave=True)
     for config in pbar:

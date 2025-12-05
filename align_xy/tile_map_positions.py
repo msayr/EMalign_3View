@@ -132,10 +132,10 @@ def estimate_tile_map_positions(combined_stacks,
             img2 = all_tiles[k2]
             # ToDo: refactor this ugly thing
             try:
-                offset, angle = estimate_transform_sift(img1, img2, scale[0])
+                offset, angle = estimate_transform_sift(img1, img2, scale[0])[:2]
             except:
                 try:
-                    offset, angle = estimate_transform_sift(img1, img2, scale[1])
+                    offset, angle = estimate_transform_sift(img1, img2, scale[1])[:2]
                 except:
                     offset = None
                     angle = 0

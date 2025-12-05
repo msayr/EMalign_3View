@@ -15,7 +15,7 @@ from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 from emprocess.utils.transform import rotate_image
 
 from ..arrays.sift import estimate_transform_sift
-from ..arrays.utils import homogenize_arrays_shape, xy_offset_to_pad, _compute_laplacian_var
+from ..arrays.utils import homogenize_arrays_shape, xy_offset_to_pad, compute_laplacian_var
 from ..arrays.overlap import get_overlap
 from .utils import mask_to_mesh
 
@@ -137,7 +137,7 @@ def stitch_images(img1,
     Img1 is the one being rotated and offset when necessary, because the rotation would result in a staircase artifact at the boundaries of the mesh.
 
     img_q_fun: function taking image and mask as arguments, returns a value higher for higher quality/sharpness.
-    e.g.: img_q_fun = lambda img, m: _compute_laplacian_var(img, m)*0.5 + _compute_sobel_mean(img, m) + _compute_grad_mag(img, m)*100
+    e.g.: img_q_fun = lambda img, m: compute_laplacian_var(img, m)*0.5 + compute_sobel_mean(img, m) + compute_grad_mag(img, m)*100
     '''
 
     # Compute mask if not provided

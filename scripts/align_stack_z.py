@@ -20,7 +20,7 @@ from sofima.warp import ndimage_warp
 from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
 from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
-from emalign.io.store import find_ref_slice, open_store, set_store_attributes, get_store_attributes
+from emalign.io.store import find_ref_slice, open_store, set_store_attributes, get_store_attributes, write_data
 from emalign.arrays.utils import resample, pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
 
@@ -154,8 +154,29 @@ def align_stack_z(destination_path,
         else:
             data_mask = compute_greyscale_mask(data)
 
-        write_data(destination, data, z_offset, np.abs(xy_offset), save_downsampled, ds_destination)
-        write_data(destination_mask, data_mask, z_offset, np.abs(xy_offset))
+        # To full resolution destination
+        write_data(destination,
+                   data,
+                   z_offset,
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To destination mask
+        write_data(destination_mask,
+                   data_mask,
+                   z_offset,
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To downsampled destination
+        if save_downsampled != 1:
+            write_data(ds_destination,
+                       data,
+                       z_offset,
+                       np.abs(xy_offset),
+                       preserve_mask = None,
+                       downsample_factor = 1/save_downsampled,
+                       resolve = True)
 
         attrs['z_aligned'] = True
         set_store_attributes(dataset, attrs)
@@ -286,12 +307,29 @@ def align_stack_z(destination_path,
         else:
             first_mask = compute_greyscale_mask(first)
 
-        write_data(destination, first, 
-                   z + z_offset - dataset.domain.inclusive_min[0], # z_offset relates to the original minimum
-                   None, np.abs(xy_offset), save_downsampled, ds_destination)
-        write_data(destination_mask, first_mask, 
-                   z + z_offset - dataset.domain.inclusive_min[0], 
-                   None, np.abs(xy_offset))
+        # To full resolution destination
+        write_data(destination,
+                   first,
+                   z + z_offset - dataset.domain.inclusive_min[0],
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To destination mask
+        write_data(destination_mask,
+                   first_mask,
+                   z + z_offset - dataset.domain.inclusive_min[0],
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To downsampled destination
+        if save_downsampled != 1:
+            write_data(ds_destination,
+                       first,
+                       z + z_offset - dataset.domain.inclusive_min[0],
+                       np.abs(xy_offset),
+                       preserve_mask = None,
+                       downsample_factor = 1/save_downsampled,
+                       resolve = True)
         
         start = z + 1
     else:
@@ -379,18 +417,31 @@ def align_stack_z(destination_path,
             write_mask = aligned_mask[y1:y2, x1:x2]
         
         # Write data
-        write_data(destination, 
+        offset = np.abs(xy_offset) + np.array([x1, y1])
+
+        # To full resolution destination
+        write_data(destination,
                    aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
                    global_z, # z_offset relates to original minimum
-                   write_mask, # Mask where to write the data
-                   np.abs(xy_offset) + np.array([x1, y1]), # Only write in the bounding box where the data is
-                   save_downsampled, ds_destination)
-        write_data(destination_mask, 
-                   aligned_mask[y1:y2, x1:x2], 
-                   global_z, 
-                   write_mask,
-                   np.abs(xy_offset) + np.array([x1, y1]), 
-                   1, None)
+                   offset, # Only write in the bounding box where the data is
+                   preserve_mask = write_mask, # Mask where to write the data
+                   resolve = True)
+        # To destination mask
+        write_data(destination_mask,
+                   aligned_mask[y1:y2, x1:x2], # Only write in the bounding box where the data is
+                   global_z, # z_offset relates to original minimum
+                   offset, # Only write in the bounding box where the data is
+                   preserve_mask = write_mask, # Mask where to write the data
+                   resolve = True)
+        # To downsampled destination
+        if save_downsampled != 1:
+            write_data(ds_destination,
+                       aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
+                       global_z, # z_offset relates to original minimum
+                   offset, # Only write in the bounding box where the data is
+                   preserve_mask = write_mask, # Mask where to write the data
+                   downsample_factor = 1/save_downsampled,
+                   resolve = True)
         
         # Log progress
         metadata = {
@@ -411,42 +462,6 @@ def align_stack_z(destination_path,
 
     return True
 
-
-def write_data(destination, data, z, mask=None, xy_offset=[0,0], save_downsampled=1, ds_destination=None):
-    # Update bounds just in case the view we have is out of date
-    destination = destination.resolve().result()
-
-    tasks = []
-    x_off, y_off = xy_offset
-
-    # Write to destination
-    y,x = data.shape
-    if np.any(destination.domain.exclusive_max < np.array([z+1, y+y_off, x+x_off])):
-        new_max = np.max([destination.domain.exclusive_max, [z+1, y+y_off, x+x_off]], axis=0)
-        destination = destination.resize(exclusive_max=new_max, expand_only=True).result()
-
-    if mask is not None:
-        # We assume that data already exists and we need to preserve it
-        og_data = destination[z, y_off:y+y_off, x_off:x+x_off].read().result()
-        og_data[mask] = data[mask]
-        data = og_data
-
-    tasks.append(destination[z, y_off:y+y_off, x_off:x+x_off].write(data).result())
-
-    # Write downsampled data for inspection
-    if save_downsampled > 1 and ds_destination is not None:
-        ds_destination = ds_destination.resolve().result()
-
-        ds_data = cv2.resize(data, None, fx=1/save_downsampled, fy=1/save_downsampled)
-        y,x = ds_data.shape
-        x_off, y_off = (np.array(xy_offset) / save_downsampled).astype(int)
-        if np.any(ds_destination.domain.exclusive_max < np.array([z+1, y+y_off, x+x_off])):
-            new_max = np.max([ds_destination.domain.exclusive_max, [z+1, y+y_off, x+x_off]], axis=0)
-            ds_destination = ds_destination.resize(exclusive_max=new_max, expand_only=True).result()
-
-        tasks.append(ds_destination[z, y_off:y+y_off, x_off:x+x_off].write(ds_data).result())
-
-    return tasks
 
 if __name__ == '__main__':
 

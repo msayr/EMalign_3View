@@ -537,20 +537,25 @@ def get_inv_map_mod(flow, stride, dataset_name, mesh_config=None):
                                             final_cap=10, prefer_orig_order=True)
 
     solved = [np.zeros_like(flow[:, 0:1, ...])]
+    ref = solved[-1]
     origin = jnp.array([0., 0.])
     all_vmax = []
     for z in tqdm(range(0, flow.shape[1]),
-                  desc=f'{dataset_name}: Relaxing mesh'):
+                  desc=f'{dataset_name}: Relaxing mesh',
+                  dynamic_ncols=True):
         f = flow[:, z:z+1, ...]
         if np.isnan(f).all():
             # No flow was computed for this slice, ignore it for mesh relaxation
-            solved.append(np.zeros_like(flow[:, 0:1, ...]))
+            # We keep the latest good slice as reference (ref)
+            solved.append(np.zeros_like(f))
             continue
-        prev = map_utils.compose_maps_fast(f, origin, stride,
-                                           solved[-1], origin, stride)
-        x, _, _, v_max = relax_mesh_mod(np.zeros_like(solved[0]), prev, mesh_config)
+
+        ref = map_utils.compose_maps_fast(f, origin, stride,
+                                           ref, origin, stride)
+        x, _, _, v_max = relax_mesh_mod(np.zeros_like(solved[0]), ref, mesh_config)
         solved.append(np.array(x))
         all_vmax.append(v_max)
+        ref = solved[-1]
 
     solved = np.concatenate(solved, axis=1)
 

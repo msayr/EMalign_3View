@@ -21,7 +21,7 @@ from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
 from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
-from emalign.io.store import find_ref_slice, open_store
+from emalign.io.store import find_ref_slice, open_store, set_store_attributes, get_store_attributes
 from emalign.arrays.utils import resample, pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
 
@@ -111,7 +111,7 @@ def align_stack_z(destination_path,
         raise e
         
     # Check whether stack was processed
-    attrs = get_dataset_attributes(dataset)
+    attrs = get_store_attributes(dataset)
     if attrs.get('z_aligned', False) == True and not overwrite:
         logging.info(f'Dataset {dataset_name} was already processed and will be skipped.')
         return False

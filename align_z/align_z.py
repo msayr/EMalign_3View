@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from emprocess.utils.mask import compute_greyscale_mask
 from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
-from ..io.store import find_ref_slice
+from ..io.store import find_ref_slice, open_store
 from ..arrays.utils import downsample, homogenize_arrays_shape, pad_to_shape
 from ..arrays.sift import estimate_transform_sift
 
@@ -64,13 +64,7 @@ def _compute_flow(dataset,
     if dataset_mask is None:
         ds_mask_path = os.path.abspath(dataset.kvstore.path) + '_mask'
         if os.path.exists(ds_mask_path):
-            dataset_mask = ts.open({
-                                'driver': 'zarr',
-                                'kvstore': {
-                                    'driver': 'file',
-                                    'path': ds_mask_path,
-                                            }
-                                    }).result()
+            dataset_mask = open_store(ds_mask_path, mode='r')
     if destination_path is None:
         destination_path = os.path.dirname(os.path.abspath(dataset.kvstore.path))
             
@@ -85,44 +79,26 @@ def _compute_flow(dataset,
                                 dataset_name + f'_transform')
     if os.path.exists(ds_flow_path):
         # Flow + Transformations exist
-        dataset_flow = ts.open({
-                            'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': ds_flow_path,
-                                        }
-                                }).result()
+        dataset_flow = open_store(ds_flow_path, mode='r', dtype=ts.float32)
         attrs = get_dataset_attributes(dataset_flow)
         assert stride == attrs['stride'], 'stride does not correspond with existing flow'
         assert patch_size == attrs['patch_size'], 'patch_size does not correspond with existing flow'
         assert (ref_slice is not None) == attrs['external_first_slice'], 'ref slice does not correspond with existing flow'
         
-        # If flow dataset exists but transformations is None, we assume we can find them in a dataset
+        # If flow dataset exists but transformations is None, we assume we can find it in a dataset
         if transformations is None:
-            dataset_trsf = ts.open({
-                                'driver': 'zarr',
-                                'kvstore': {
-                                    'driver': 'file',
-                                    'path': ds_trsf_path,
-                                            }
-                                    }).result()
+            dataset_trsf = open_store(ds_trsf_path, mode='r', dtype=ts.float32)
     else:
         # Flow + Transformations are to be created from scratch
-        dataset_flow = ts.open({'driver': 'zarr',
-                                'kvstore': {
-                                    'driver': 'file',
-                                    'path': ds_flow_path,
-                                            },
-                                'metadata':{
-                                    'shape': [original_shape[0],4,1,1],
-                                    'chunks':[1,4,128,128]
-                                            },
-                                'transform': {'input_labels': ['z', 'c', 'y', 'x']}
-                                },
-                                dtype=ts.float32,
-                                fill_value=np.nan,
-                                create=True
-                                ).result()
+        dataset_flow = open_store(
+            ds_flow_path,
+            mode='w',
+            dtype=ts.float32,
+            shape=[original_shape[0], 4, 1, 1],
+            chunks=[1, 4, 128, 128],
+            axis_labels=['z', 'c', 'y', 'x'],
+            fill_value=np.nan
+        )
         attrs = {
             'dataset_path': os.path.abspath(dataset.kvstore.path),
             'patch_size': patch_size,
@@ -134,20 +110,14 @@ def _compute_flow(dataset,
         
         # No transformation exist, we will compute it
         if transformations is None:
-            dataset_trsf = ts.open({'driver': 'zarr',
-                                    'kvstore': {
-                                        'driver': 'file',
-                                        'path': ds_trsf_path,
-                                                },
-                                    'metadata':{
-                                        'shape': [original_shape[0],2,4],
-                                        'chunks':[1,2,4]
-                                                },
-                                    'transform': {'input_labels': ['z', 'a', 'b']}
-                                    },
-                                    dtype=ts.float32,
-                                    create=True
-                                    ).result()
+            dataset_trsf = open_store(
+                ds_trsf_path,
+                mode='w',
+                dtype=ts.float32,
+                shape=[original_shape[0], 2, 4],
+                chunks=[1, 2, 4],
+                axis_labels=['z', 'a', 'b']
+            )
             attrs = {
                 'dataset_path': os.path.abspath(dataset.kvstore.path),
                 'scale': scale,

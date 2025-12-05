@@ -26,6 +26,7 @@ from emalign.align_xy.render import render_slice_xy
 from emalign.align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
 from emalign.arrays.stacks import Stack, parse_stack_info
 from emalign.arrays.tile_map import get_tile_map_margins
+from emalign.io import open_store
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
 
 
@@ -97,52 +98,24 @@ def align_stack_xy(output_path,
        return False
     
     if overwrite or not os.path.exists(zarr_path):
-        dataset = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': zarr_path,
-                                        },
-                            'metadata':{
-                                'shape': [z_shape + 1, 
-                                            1, 1],
-                                'chunks':[1,512,512]
-                                        },
-                            'transform': {'input_labels': ['z', 'y', 'x']}
-                            },
-                            dtype=ts.uint8, 
-                            create=True,
-                            delete_existing=True).result()   
-        
-        dataset_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': zarr_path_mask,
-                                        },
-                            'metadata':{
-                                'shape': [z_shape + 1, 
-                                            1, 1],
-                                'chunks':[1,512,512]
-                                        },
-                            'transform': {'input_labels': ['z', 'y', 'x']}
-                            },
-                            dtype=ts.bool,
-                            create=True,
-                            delete_existing=True).result()   
+        dataset = open_store(
+            zarr_path,
+            mode='w',
+            dtype=ts.uint8,
+            shape=[z_shape + 1, 1, 1],
+            chunks=[1, 512, 512]
+        )
+
+        dataset_mask = open_store(
+            zarr_path_mask,
+            mode='w',
+            dtype=ts.bool,
+            shape=[z_shape + 1, 1, 1],
+            chunks=[1, 512, 512]
+        )
     else:
-        dataset = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': zarr_path,
-                                        },
-                            },
-                            dtype=ts.uint8).result()  
-        dataset_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': zarr_path_mask,
-                                        },
-                            },
-                            dtype=ts.bool).result()  
+        dataset = open_store(zarr_path, mode='r+', dtype=ts.uint8)
+        dataset_mask = open_store(zarr_path_mask, mode='r+', dtype=ts.bool)  
         
     #####################
     ### PROCESS STACK ###

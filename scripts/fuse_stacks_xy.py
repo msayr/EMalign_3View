@@ -4,7 +4,7 @@ import logging
 import os
 from emalign.align_xy.stitch_offgrid import stitch_images
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
-from emalign.io.store import write_slice
+from emalign.io.store import write_slice, open_store
 import tensorstore as ts
 
 from glob import glob
@@ -112,12 +112,7 @@ def fuse_stacks_group(config,
     datasets = []
     for z_offset, ds_path in zip(config['z_offsets'], config['dataset_paths']):
         # Open dataset
-        ds = ts.open({'driver': 'zarr',
-                        'kvstore': {
-                                'driver': 'file',
-                                'path': ds_path,
-                                    }},
-                            read=True).result()
+        ds = open_store(ds_path, mode='r')
         
         # Limit to the overlapping range only
         zmin = config['zmin'] - z_offset
@@ -133,12 +128,7 @@ def fuse_stacks_group(config,
         # Open mask if exists
         ds_mask_path = os.path.abspath(ds_path) + '_mask'
         if os.path.exists(ds_mask_path):
-            ds_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                            'driver': 'file',
-                            'path': ds_mask_path,
-                            }},
-                            read=True).result()
+            ds_mask = open_store(ds_mask_path, mode='r', dtype=ts.bool)
             ds_mask = ds_mask[zmin:zmax]
         else:
             ds_mask = None
@@ -157,52 +147,25 @@ def fuse_stacks_group(config,
 
     if overwrite or not os.path.exists(destination_path):
         # Create destination from scratch
-        destination = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_path,
-                                        },
-                            'metadata':{
-                                'shape': [z_shape, 1, 1],
-                                'chunks':[1,512,512]
-                                        },
-                            'transform': {'input_labels': ['z', 'y', 'x']}
-                            },
-                            dtype=ts.uint8, 
-                            create=True,
-                            delete_existing=True).result() 
-          
-        destination_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_mask_path,
-                                        },
-                            'metadata':{
-                                'shape': [z_shape, 1, 1],
-                                'chunks':[1,512,512]
-                                        },
-                            'transform': {'input_labels': ['z', 'y', 'x']}
-                            },
-                            dtype=ts.bool,
-                            create=True,
-                            delete_existing=True).result()   
+        destination = open_store(
+            destination_path,
+            mode='w',
+            dtype=ts.uint8,
+            shape=[z_shape, 1, 1],
+            chunks=[1, 512, 512]
+        )
+
+        destination_mask = open_store(
+            destination_mask_path,
+            mode='w',
+            dtype=ts.bool,
+            shape=[z_shape, 1, 1],
+            chunks=[1, 512, 512]
+        )
     else:
         # Load existing destination
-        destination = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_path,
-                                        },
-                            },
-                            dtype=ts.uint8).result()  
-        
-        destination_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_mask_path,
-                                        },
-                            },
-                            dtype=ts.bool).result()        
+        destination = open_store(destination_path, mode='r+', dtype=ts.uint8)
+        destination_mask = open_store(destination_mask_path, mode='r+', dtype=ts.bool)        
     
     # Start stitching
     k0 = 0.01

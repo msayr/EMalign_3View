@@ -2,7 +2,7 @@
 
 import json
 from emalign.arrays.utils import downsample
-from emalign.io.store import find_ref_slice
+from emalign.io.store import find_ref_slice, open_store
 import networkx as nx
 import numpy as np
 import os
@@ -61,14 +61,7 @@ def get_ordered_datasets(config_paths, exclude=[]):
                 check = [pattern in ds for pattern in exclude]
                 if np.any(check):
                     continue
-                spec = {
-                        'driver': 'zarr',
-                        'kvstore': {
-                            'driver': 'file',
-                            'path': ds,
-                        }
-                    }
-                dataset = ts.open(spec).result()
+                dataset = open_store(ds, mode='r')
                 z_shapes.append(dataset.shape[0])
 
                 offset = get_dataset_attributes(dataset)['voxel_offset']

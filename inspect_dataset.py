@@ -7,6 +7,7 @@ import tensorstore as ts
 from glob import glob
 
 from emalign.align_z.utils import get_ordered_datasets
+from emalign.io import open_store
 from emalign.visualize.nglancer import add_layers, start_nglancer_viewer
 
 
@@ -15,14 +16,7 @@ def read_data(
             bounding_box=None,
             keep_missing=False):
     
-    spec = {'driver': 'zarr',
-                        'kvstore': {
-                                'driver': 'file',
-                                'path': dataset_path,
-                                    }}
-    dataset = ts.open(spec,
-                      read=True,
-                      ).result()
+    dataset = open_store(dataset_path, mode='r')
     
     if bounding_box is None:
         data = dataset[:].read().result()
@@ -81,15 +75,7 @@ def inspect_dataset(
     '''
   
     if print_shape:
-        spec = {'driver': 'zarr',
-                'kvstore': {
-                         'driver': 'file',
-                         'path': dataset_path,
-                            }}
-        dataset = ts.open(spec,
-                          read=True,
-                          dtype=ts.uint8
-                          ).result()
+        dataset = open_store(dataset_path, mode='r', dtype=ts.uint8)
         print(f'Dataset shape (ZYX):\n    {dataset.shape}')
         sys.exit()
         

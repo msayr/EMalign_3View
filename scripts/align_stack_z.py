@@ -21,7 +21,7 @@ from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
 from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
-from emalign.io.store import find_ref_slice
+from emalign.io.store import find_ref_slice, open_store
 from emalign.arrays.utils import downsample, pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
 
@@ -136,35 +136,14 @@ def align_stack_z(destination_path,
     logging.info(f'Target scale ({dataset_name}): {target_scale}')
     
     #---------- Open destination(s) ----------#
-    destination = ts.open({'driver': 'zarr',
-                           'kvstore': {
-                                 'driver': 'file',
-                                 'path': destination_path,
-                                      }
-                          },
-                          dtype=ts.uint8
-                          ).result()
-    destination_mask = ts.open({'driver': 'zarr',
-                                'kvstore': {
-                                        'driver': 'file',
-                                        'path': destination_path + '_mask',
-                                            }
-                                },
-                                dtype=ts.bool
-                                ).result()
-    
+    destination = open_store(destination_path, mode='r+', dtype=ts.uint8)
+    destination_mask = open_store(destination_path + '_mask', mode='r+', dtype=ts.bool)
+
     ds_destination = None
     if save_downsampled > 1:
         ds_output_path, project_name_from_path = destination_path.rsplit('/', maxsplit=1)
         ds_output_path = os.path.join(ds_output_path, f'{save_downsampled}x_' + project_name_from_path)
-        ds_destination = ts.open({'driver': 'zarr',
-                                  'kvstore': {
-                                          'driver': 'file',
-                                          'path': ds_output_path,
-                                              }
-                                  },
-                                  dtype=ts.uint8
-                                  ).result()
+        ds_destination = open_store(ds_output_path, mode='r+', dtype=ts.uint8)
                 
     #---------- Compute flow ----------#
     if first_slice is not None:

@@ -25,7 +25,7 @@ logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 
 def prep_align_stacks(main_dir,
                       project_dir,
-                      output_path,
+                      output_name,
                       dir_pattern,
                       resolution,
                       offset,
@@ -40,9 +40,10 @@ def prep_align_stacks(main_dir,
                       project_name=None,
                       force_overwrite=False):
     
+    # Make config dir
     config_dir = os.path.join(project_dir, 'config')
     os.makedirs(config_dir, exist_ok=True)
-    logging.info(f'Configs will be stored at: {project_dir}')
+    logging.info(f'Configs and outputs will be stored at: {project_dir}')
 
     main_config_path = os.path.join(config_dir, 'main_config.json')
     if os.path.exists(main_config_path) and not force_overwrite:
@@ -53,6 +54,11 @@ def prep_align_stacks(main_dir,
         else:
             logging.info('Overwriting existing config')
 
+    # Create output path
+    output_name = output_name if output_name.endswith('.zarr') else output_name.rstrip('. ') + '.zarr'
+    output_path = os.path.join(project_dir, output_name)
+
+    # Determine the offset from a previous dataset that this one relates to
     if prev_cfg is not None:
         offset[0] = find_offset_from_main_config(prev_cfg)
         logging.info(f'Determined z offset from previous dataset: {offset[0]}')
@@ -161,10 +167,10 @@ if __name__ == '__main__':
                               Subdirectories are expected to contain tif and info files.')
     parser.add_argument('-o', '--output_zarr',
                         metavar='OUT_ZARR',
-                        dest='output_path',
+                        dest='output_name',
                         required=True,
                         type=str,
-                        help='Path to the zarr container where to write stitched tifs.')
+                        help='Name for the zarr container that will contain stitched files. Will be written in project_dir.')
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
                         dest='project_dir',

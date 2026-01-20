@@ -171,7 +171,12 @@ def compute_alignment_path(datasets,
         z_levels[g] = (group.z.min(), group.z.max())
 
     # Find first dataset alone at its own z level
-    root_node_idx = df.ds_indices[df.ds_indices.apply(len) == 1][0][0]
+    root_datasets = df.ds_indices[df.ds_indices.apply(len) == 1] 
+
+    if len(root_datasets) == 0:
+        raise RuntimeError('No potential root dataset was found: no dataset with no overlap along Z.')
+
+    root_node_idx = root_datasets[0][0]
     root_node = os.path.basename(os.path.abspath(datasets[root_node_idx].kvstore.path))
 
     # Compute valid alignment paths

@@ -234,8 +234,11 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z,
     with open(os.path.join(output_configs_dir, '00_align_plan.json'), 'w') as f:
         json.dump(align_plan, f, indent='')
 
+    done = []
     for i, (path, order) in enumerate(zip(paths, reverse_order)):
         for dataset_name in path:
+            if dataset_name in done:
+                continue
             idx = [os.path.basename(os.path.abspath(d.kvstore.path)) == dataset_name for d in datasets].index(True)
             dataset = datasets[idx]
             z_offset = int(z_offsets[idx, 0]) + ds_bounds[dataset_name][0] # z offset is not correct anymore because the bounds may have been shifted
@@ -275,6 +278,7 @@ def create_alignment_configs(datasets, z_offsets, output_configs_dir, config_z,
 
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent='')
+            done.append(dataset_name)
     logging.info(f'Configuration files were created at {output_configs_dir}')
 
     return root_stack, paths, reverse_order, root_offset

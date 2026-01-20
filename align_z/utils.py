@@ -40,7 +40,6 @@ def get_ordered_datasets(config_paths, exclude=[]):
             config_groups.append([config])
 
     # Check config one by one
-    dataset_paths = []
     dataset_stores = []
     offsets = []
     previous_offset = 0
@@ -54,8 +53,7 @@ def get_ordered_datasets(config_paths, exclude=[]):
             # Get info from config
             project_name    = main_config['project_name']
             output_path     = main_config['output_path']
-            dataset_paths = [d for d in glob(os.path.join(output_path, '*/')) 
-                             if (os.path.basename(d[:-1]) != project_name) & (os.path.basename(d[:-1]) != '10x_' + project_name)]
+            dataset_paths = glob(os.path.join(output_path, 'xy_intermediate', '*/'))
 
             for ds in dataset_paths:
                 check = [pattern in ds for pattern in exclude]

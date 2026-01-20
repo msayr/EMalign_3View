@@ -51,7 +51,7 @@ def align_stack_xy(output_path,
     '''Align and stitch image stack in XY. 
 
     Args:
-        output_path (str): Path to the zarr container where the stack will be written.
+        output_path (str): Path to the zarr container where the stack will be written. Stacks aligned in XY are written to output_path/xy_intermediate.
         stack_name (str): Name of the stack. Will be used as the dataset name in the destination zarr container. 
         tile_maps_paths (dict): Dictionnary of slices to dictionnary of tile grid positions to paths of tifs.
         tile_maps_invert (dict): Dictionnary of tile grid positions to boolean, describing whether tiles need to be inverted at that position. 
@@ -82,8 +82,8 @@ def align_stack_xy(output_path,
                   tile_maps_invert=tile_maps_invert)
 
     # Variables
-    zarr_path = os.path.join(output_path, stack.stack_name)
-    zarr_path_mask = os.path.join(output_path, stack.stack_name + '_mask')
+    zarr_path = os.path.join(output_path, 'xy_intermediate', stack.stack_name)
+    zarr_path_mask = os.path.join(output_path, 'xy_intermediate', stack.stack_name + '_mask')
     attrs_path = os.path.join(zarr_path, '.zattrs')
 
     z_offset = min(stack.slices)

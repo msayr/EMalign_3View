@@ -1,6 +1,8 @@
 import json
+import logging
 import networkx as nx
 import numpy as np
+import os
 import pandas as pd
 
 from concurrent import futures
@@ -28,15 +30,36 @@ def find_offset_from_main_config(main_config_path):
         int: Z offset of a new stack that would follow the one represented by main_config (i.e. previous stack end + 1)
     '''
 
+    if not os.path.exists(main_config_path):
+        raise FileNotFoundError(f'Config file not found: {main_config_path}')
+
     with open(main_config_path, 'r') as f:
         main_config = json.load(f)
 
+    if 'stack_configs' not in main_config:
+        raise ValueError(f'Invalid config: missing "stack_configs" key in {main_config_path}')
+
+    stack_configs = main_config['stack_configs']
+    if not stack_configs:
+        raise ValueError(f'No stacks found in config: {main_config_path}')
+
     z_offsets = []
-    for stack_config in main_config['stack_configs'].values():
-        with open(stack_config, 'r') as f:
+    for stack_name, config_path in stack_configs.items():
+        if not os.path.exists(config_path):
+            logging.warning(f'Stack config not found: {config_path}, skipping')
+            continue
+
+        with open(config_path, 'r') as f:
             stack_config = json.load(f)
-        
+
+        if 'z_end' not in stack_config:
+            logging.warning(f'Missing z_end in {config_path}, skipping')
+            continue
+
         z_offsets.append(stack_config['z_end'])
+
+    if not z_offsets:
+        raise ValueError(f'No valid z_end values found in any stack configs')
 
     return max(z_offsets) + 1
 
@@ -61,6 +84,9 @@ def get_stacks(stack_paths,
     for stack_path in stack_paths:
         stack = Stack(stack_path)
         stack._get_tilemaps_paths()
+        if stack.stack_name not in invert_instructions:
+            logging.error(f'Stack "{stack.stack_name}" not found in invert_instructions')
+            raise ValueError(f'Missing invert instructions for stack: {stack.stack_name}')
         for k in stack.tile_maps_invert.keys():
             stack.tile_maps_invert[k]=invert_instructions[stack.stack_name]
         stacks.append(stack) 
@@ -97,6 +123,9 @@ def get_stacks(stack_paths,
             stack = Stack()
             stack.stack_name = new_stack_name
             stack._set_tilemaps_paths(tile_map)
+            if stack_names[0] not in invert_instructions:
+                logging.error(f'Stack "{stack_names[0]}" not found in invert_instructions')
+                raise ValueError(f'Missing invert instructions for stack: {stack_names[0]}')
             stack.tile_maps_invert = {k: invert_instructions[stack_names[0]] for k in tile_map[z].keys()}
 
             new_stacks[new_stack_name] = stack
@@ -113,6 +142,9 @@ def get_stacks(stack_paths,
                 stack = Stack()
                 stack.stack_name = new_stack_name
                 stack._set_tilemaps_paths(tile_map)
+                if stack_names[i] not in invert_instructions:
+                    logging.error(f'Stack "{stack_names[i]}" not found in invert_instructions')
+                    raise ValueError(f'Missing invert instructions for stack: {stack_names[i]}')
                 stack.tile_maps_invert = {k: invert_instructions[stack_names[i]] for k in tile_map[z].keys()}
 
                 pair.append(stack)

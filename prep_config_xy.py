@@ -16,7 +16,7 @@ import pandas as pd
 import sys
 
 from emalign.align_xy.prep import find_offset_from_main_config, get_stacks, check_stacks_to_invert
-from emalign.io.volumescope import get_tilesets
+from emalign.io.backend import get_io_backend
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
@@ -37,8 +37,11 @@ def prep_align_stacks(main_dir,
                       prev_cfg,
                       num_workers,
                       port,
+                      io_mode='volumescope',
                       project_name=None,
                       force_overwrite=False):
+    
+    io_backend = get_io_backend(io_mode)
     
     # Make config dir
     config_dir = os.path.join(project_dir, 'config', 'xy_config')
@@ -47,7 +50,7 @@ def prep_align_stacks(main_dir,
 
     main_config_path = os.path.join(config_dir, 'main_config.json')
     if os.path.exists(main_config_path) and not force_overwrite:
-        response = input(f'Config already exists at {main_config_path}. Overwrite? [y/N] ')
+        response = input(f'Config already exists at {main_config_path}.\nOverwrite? [y/N] ')
         if response.lower() != 'y':
             logging.info('Exiting without overwriting existing config')
             sys.exit(0)
@@ -65,7 +68,7 @@ def prep_align_stacks(main_dir,
 
     # Find tilesets with desired resolution
     logging.info(f'Looking for tilesets in: {main_dir}')
-    stack_paths = get_tilesets(main_dir, resolution, dir_pattern, num_workers)
+    stack_paths = io_backend.get_tilesets(main_dir, resolution, dir_pattern, num_workers)
 
     logging.info(f'Found {len(stack_paths)} directories corresponding to resolution {resolution}: ')
     for s in stack_paths:
@@ -79,7 +82,7 @@ def prep_align_stacks(main_dir,
     logging.info('Please check whether to invert stacks')
     invert_instructions = check_stacks_to_invert(stack_paths, num_workers, bind_port=port)
 
-    stacks = get_stacks(stack_paths, invert_instructions)
+    stacks = get_stacks(stack_paths, invert_instructions, io_backend=io_backend)
 
     # Look for overlapping stacks
     combined_stacks = {k:v for k,v in stacks.items() if isinstance(v, list)}
@@ -259,6 +262,12 @@ if __name__ == '__main__':
                         action='store_true',
                         default=False,
                         help='Force overwrite of existing config files without prompting.')
+    parser.add_argument('--mode',
+                        metavar='MODE',
+                        dest='io_mode',
+                        default='volumescope',
+                        type=str,
+                        help='Valid mode for the IO backend, defining how to parse info from file names (see emalign.io.backend for valid modes).')
 
     args=parser.parse_args()
 

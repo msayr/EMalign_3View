@@ -65,7 +65,8 @@ def find_offset_from_main_config(main_config_path):
 
 
 def get_stacks(stack_paths, 
-               invert_instructions):
+               invert_instructions,
+               io_backend):
     '''Get segments of potentially overlapping stacks from paths. 
 
     Use a list of tileset paths to fetch stacks and split them into overlapping segments.
@@ -82,7 +83,7 @@ def get_stacks(stack_paths,
     # Load stacks
     stacks = []
     for stack_path in stack_paths:
-        stack = Stack(stack_path)
+        stack = Stack(stack_path, io_backend=io_backend)
         stack._get_tilemaps_paths()
         if stack.stack_name not in invert_instructions:
             logging.error(f'Stack "{stack.stack_name}" not found in invert_instructions')
@@ -139,7 +140,7 @@ def get_stacks(stack_paths,
                 for z in group_df.z:
                     tile_map[z] = group_df.loc[group_df.z == z, 'tile_paths'].item()[i]
 
-                stack = Stack()
+                stack = Stack(io_backend=io_backend)
                 stack.stack_name = new_stack_name
                 stack._set_tilemaps_paths(tile_map)
                 if stack_names[i] not in invert_instructions:

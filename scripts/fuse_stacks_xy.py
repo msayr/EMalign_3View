@@ -3,9 +3,8 @@ import json
 import logging
 import os
 from emalign.align_xy.stitch_offgrid import stitch_images
-from emalign.io.mongo import check_progress
-from emalign.io.store import write_slice
-from pymongo import MongoClient
+from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
+from emalign.io.store import write_slice, open_store
 import tensorstore as ts
 
 from glob import glob
@@ -14,7 +13,7 @@ from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 from emprocess.utils.mask import compute_greyscale_mask
 
 from emalign.align_xy.prep import create_configs_fused_stacks
-from emalign.arrays.utils import _compute_laplacian_var, _compute_sobel_mean, _compute_grad_mag, downsample
+from emalign.arrays.utils import compute_laplacian_var, compute_sobel_mean, compute_grad_mag, resample
 
 
 # TODO: add a first slice test to make sure it is not missing images
@@ -63,7 +62,8 @@ def get_fused_configs(
 
 
 def fuse_stacks_group(config, 
-                      db_name,
+                      project_name,
+                      mongodb_config_filepath=None,
                       scale=0.1, 
                       patch_size=160, 
                       stride=40, 
@@ -72,12 +72,14 @@ def fuse_stacks_group(config,
                       destination_path=None,
                       target_res=None,
                       overwrite=False,
+                      wipe_progress_flag=False,
                       num_workers=1):
     '''Fuse a group of stacks that overlap on the XY plane.
 
     Args:
         config (dict): Configuration dictionnary containing the paths to the stacks to align.
-        db_name (str): Name of the MongoDB database to write progress documents to.
+        project_name (str): Name of the project.
+        mongodb_config_filepath (str, optional): Path to the MongoDB configuration file. Defaults to None.
         scale (float): Scale to downsample images to when determining offset using SIFT. Defaults to 0.1.
         patch_size (int, optional): Patch size used to compute the flow map using `sofima.flow_field.JAXMaskedXCorrWithStatsCalculator`. 
             Defaults to 160.
@@ -87,6 +89,7 @@ def fuse_stacks_group(config,
         img_q_fun (callable, optional): If img_on_top is set to auto, function taking image and mask as arguments, returns a value higher for higher quality/sharpness. 
             Defaults to None.
         overwrite (bool, optional): Whether to delete destination and start over. Defaults to False.
+        wipe_progress_flag (bool): Whether to wipe progress for the stack. Defaults to False.
         num_workers (int, optional): Number of threads used to render the final image by `sofima.warp.ndimage_warp`. Defaults to 1.
     '''
 
@@ -94,16 +97,22 @@ def fuse_stacks_group(config,
     if img_on_top == 'auto' and img_q_fun is None:
         raise ValueError('img_on_top set to auto. Please provide img_q_fun.')
     
+    # Prepare destination name
+    destination_name = '_'.join([os.path.basename(os.path.abspath(ds)) for ds in config['dataset_paths']])
+    destination_name += '_fused'
+
+    client = get_mongo_client(mongodb_config_filepath)
+    db = get_mongo_db(client, project_name)
+
+    if wipe_progress_flag:
+        logging.info(f"Wiping progress for stack: {destination_name}")
+        wipe_progress(db, destination_name)
+
     # Open datasets
     datasets = []
     for z_offset, ds_path in zip(config['z_offsets'], config['dataset_paths']):
         # Open dataset
-        ds = ts.open({'driver': 'zarr',
-                        'kvstore': {
-                                'driver': 'file',
-                                'path': ds_path,
-                                    }},
-                            read=True).result()
+        ds = open_store(ds_path, mode='r')
         
         # Limit to the overlapping range only
         zmin = config['zmin'] - z_offset
@@ -119,12 +128,7 @@ def fuse_stacks_group(config,
         # Open mask if exists
         ds_mask_path = os.path.abspath(ds_path) + '_mask'
         if os.path.exists(ds_mask_path):
-            ds_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                            'driver': 'file',
-                            'path': ds_mask_path,
-                            }},
-                            read=True).result()
+            ds_mask = open_store(ds_mask_path, mode='r', dtype=ts.bool)
             ds_mask = ds_mask[zmin:zmax]
         else:
             ds_mask = None
@@ -134,9 +138,6 @@ def fuse_stacks_group(config,
     if overwrite:
         logging.warning('Existing dataset will be deleted and aligned from scratch.')
 
-    # Prepare destination    
-    destination_name = '_'.join([os.path.basename(os.path.abspath(ds)) for ds in config['dataset_paths']])
-    destination_name += '_fused'
     z_shape = config['zmax'] - config['zmin']
 
     if destination_path is None:
@@ -146,68 +147,36 @@ def fuse_stacks_group(config,
 
     if overwrite or not os.path.exists(destination_path):
         # Create destination from scratch
-        destination = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_path,
-                                        },
-                            'metadata':{
-                                'shape': [z_shape, 1, 1],
-                                'chunks':[1,512,512]
-                                        },
-                            'transform': {'input_labels': ['z', 'y', 'x']}
-                            },
-                            dtype=ts.uint8, 
-                            create=True,
-                            delete_existing=True).result() 
-          
-        destination_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_mask_path,
-                                        },
-                            'metadata':{
-                                'shape': [z_shape, 1, 1],
-                                'chunks':[1,512,512]
-                                        },
-                            'transform': {'input_labels': ['z', 'y', 'x']}
-                            },
-                            dtype=ts.bool,
-                            create=True,
-                            delete_existing=True).result()   
+        destination = open_store(
+            destination_path,
+            mode='w',
+            dtype=ts.uint8,
+            shape=[z_shape, 1, 1],
+            chunks=[1, 512, 512]
+        )
+
+        destination_mask = open_store(
+            destination_mask_path,
+            mode='w',
+            dtype=ts.bool,
+            shape=[z_shape, 1, 1],
+            chunks=[1, 512, 512]
+        )
     else:
         # Load existing destination
-        destination = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_path,
-                                        },
-                            },
-                            dtype=ts.uint8).result()  
-        
-        destination_mask = ts.open({'driver': 'zarr',
-                            'kvstore': {
-                                'driver': 'file',
-                                'path': destination_mask_path,
-                                        },
-                            },
-                            dtype=ts.bool).result()        
+        destination = open_store(destination_path, mode='r+', dtype=ts.uint8)
+        destination_mask = open_store(destination_mask_path, mode='r+', dtype=ts.bool)        
     
-    # Track progress
-    db_host=None
-    collection_name ='FUSE_XY_' + destination_name
-    client = MongoClient(db_host)
-    db = client[db_name]
-    collection_progress = db[collection_name]
-
     # Start stitching
     k0 = 0.01
     k = 0.1
     gamma = 0.5 
+    step_name = "fuse_xy"
     
     pbarz = tqdm(range(z_shape), position=1)
     for z in pbarz:
-        if check_progress({'stack_name': destination_name, 'z': z}, db_host, db_name, collection_name) and not overwrite:
+        global_slice_index = z + config['zmin']
+        if check_progress(db, destination_name, step_name, global_slice_index) and not overwrite:
             pbarz.set_description(f'Skipping {z}...')
             continue
         pbarz.set_description(f'Fusing stacks...')
@@ -230,8 +199,8 @@ def fuse_stacks_group(config,
                 mask = dataset_mask[z + zmin].read().result()
 
             # Resample to the correct resolution
-            img = downsample(img, target_scale)
-            mask = downsample(mask, target_scale)
+            img = resample(img, target_scale)
+            mask = resample(mask, target_scale)
             
             if canvas is None:
                 # First image
@@ -268,9 +237,7 @@ def fuse_stacks_group(config,
                 destination_mask, _ = write_slice(destination_mask, canvas_mask, z)
 
         # Log progress
-        doc = {
-            'stack_name': destination_name,
-            'z': z,
+        metadata = {
             'mesh_parameters':{
                             'stride':stride,
                             'patch_size':patch_size,
@@ -282,7 +249,7 @@ def fuse_stacks_group(config,
             'scale': scale,
             'img_on_top': img_on_top
                 }
-        collection_progress.insert_one(doc)
+        log_progress(db, destination_name, step_name, global_slice_index, z, metadata)
 
     # Destination takes the same attributes as the stacks we just processed
     attributes = get_dataset_attributes(datasets[0]['dataset'])
@@ -301,6 +268,7 @@ def align_fused_stacks_xy(config_path,
                           stride=40,
                           img_on_top='auto',
                           overwrite=False,
+                          wipe_progress_stack=None,
                           num_workers=1):
     '''Align groups of overlapping stacks one after the other.
 
@@ -311,6 +279,7 @@ def align_fused_stacks_xy(config_path,
         stride (int, optional): _description_. Defaults to 40.
         img_on_top (str, optional): _description_. Defaults to 'auto'.
         overwrite (bool, optional): _description_. Defaults to False.
+        wipe_progress_stack (str, optional): Name of the stack to wipe progress for. Defaults to None.
         num_workers (int, optional): _description_. Defaults to 1.
     '''
     
@@ -318,8 +287,11 @@ def align_fused_stacks_xy(config_path,
         main_config = json.load(f)
     target_res = main_config['resolution'][-1]
 
-    project = os.path.basename(main_config['output_path']).rstrip('.zarr')
-    db_name=f'alignment_progress_{project}'
+    project_name = main_config.get('project_name')
+    if not project_name:
+        project_name = os.path.basename(main_config['output_path']).rstrip('.zarr')
+    mongodb_config_filepath = main_config.get('mongodb_config_filepath')
+
 
     fused_configs = get_fused_configs(config_path,
                                       0.1)
@@ -327,13 +299,18 @@ def align_fused_stacks_xy(config_path,
     # Function to determine image quality to choose which one is on top
     # Highest value == on top
     # laplacian variance is sensitive to contrast and is thus weighted lower
-    img_q_fun = lambda img, m: _compute_laplacian_var(img, m)*0.5 + _compute_sobel_mean(img, m) + _compute_grad_mag(img, m)*100
+    img_q_fun = lambda img, m: compute_laplacian_var(img, m)*0.5 + compute_sobel_mean(img, m) + compute_grad_mag(img, m)*100
     
     pbar = tqdm(fused_configs, position=0, leave=True)
     for config in pbar:
         pbar.set_description(f'z = {config['zmin']} - {config['zmax']}: Processing group of stacks...')
-        fuse_stacks_group(config, 
-                          db_name=db_name,
+        destination_name = '_'.join([os.path.basename(os.path.abspath(ds)) for ds in config['dataset_paths']])
+        destination_name += '_fused'
+        wipe_this_stack = (destination_name == wipe_progress_stack)
+
+        fuse_stacks_group(config,
+                          project_name=project_name,
+                          mongodb_config_filepath=mongodb_config_filepath,
                           scale=scale,
                           patch_size=patch_size, 
                           stride=stride, 
@@ -341,6 +318,7 @@ def align_fused_stacks_xy(config_path,
                           img_on_top=img_on_top, 
                           img_q_fun=img_q_fun, 
                           overwrite=overwrite,
+                          wipe_progress_flag=wipe_this_stack,
                           num_workers=num_workers)
     logging.info(f'All {len(fused_configs)} stacks were fused!')
 
@@ -359,9 +337,20 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--cores',
                         metavar='CORES',
                         dest='num_workers',
-                        required=True,
+                        required=False,
+                        default=1,
                         type=int,
                         help='Number of threads to use for rendering. Default: 1')
-    args=parser.parse_args()
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite existing dataset.')
+    parser.add_argument('--wipe-progress',
+                        dest='wipe_progress_stack',
+                        type=str,
+                        default=None,
+                        help='Wipe progress for a specific stack before starting.')
 
-    align_fused_stacks_xy(**vars(args))
+    args = parser.parse_args()
+
+    align_fused_stacks_xy(config_path=args.config_path,
+                          num_workers=args.num_workers,
+                          overwrite=args.overwrite,
+                          wipe_progress_stack=args.wipe_progress_stack)

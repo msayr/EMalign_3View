@@ -1,4 +1,4 @@
-import inspect
+import argparse
 import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'cuda_async'
@@ -6,12 +6,10 @@ os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 # os.environ['OMP_NUM_THREADS'] = '4'
 # os.environ['MKL_NUM_THREADS'] = '4'
 
-import datetime
 import cv2
 import json
 import numpy as np
 import logging
-import sys
 import tensorstore as ts
 
 from connectomics.common import bounding_box
@@ -19,13 +17,12 @@ from tqdm import tqdm
 
 from sofima import mesh
 from sofima.warp import ndimage_warp
-from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
 from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
-from emalign.align_z.align_z import compute_flow_dataset, get_inv_map_mod
-from emalign.io.store import find_ref_slice
-from emalign.arrays.utils import downsample
-
+from emalign.align_z.align_z import compute_flow_dataset, get_inv_map
+from emalign.io.store import find_ref_slice, open_store, set_store_attributes, get_store_attributes, write_data
+from emalign.arrays.utils import resample, pad_to_shape
+from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
@@ -34,27 +31,44 @@ logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 # TODO: save PR metric for optic flow to highlight slices where alignment might not be good
 
 def align_stack_z(destination_path,
-                  dataset_path, 
+                  dataset_path,
+                  dataset_name,
                   z_offset,
                   scale, 
                   flow_config,
-                  mesh_config,
                   warp_config,
                   first_slice,
                   yx_target_resolution,
-                  db_name,
+                  mesh_config={},
+                  project_name='OV',
+                  mongodb_config_filepath=None,
                   local_z_min=None,
                   local_z_max=None,
                   xy_offset=[0,0],
                   ignore_slices_flow=[],
                   save_downsampled=1,
                   overwrite=False,
+                  wipe_progress_flag=False,
+                  reverse_order=False,
                   num_workers=10):
+    
+    if reverse_order:
+        raise NotImplementedError('Processing a stack in reverse is not implemented yet.')
     
     if isinstance(yx_target_resolution, list):
         assert yx_target_resolution[0] == yx_target_resolution[1], 'Only supports equal resolution in X and Y'
         yx_target_resolution = yx_target_resolution[0]
     
+    client = get_mongo_client(mongodb_config_filepath)
+    db = get_mongo_db(client, project_name)
+
+    if wipe_progress_flag:
+        logging.info(f'Wiping progress for stack: {dataset_name}')
+        wipe_progress(db, dataset_name)
+        
+        # Since we wipe progress, we also want to make sure that all old data will be overwritten properly
+        overwrite = True
+
     #---------- Prepare variables ----------#
     # Flow parameters
     patch_size    = flow_config['patch_size'] 
@@ -63,58 +77,47 @@ def align_stack_z(destination_path,
     max_magnitude = flow_config['max_magnitude']
 
     # Mesh opti parameters
-    k0    = mesh_config['k0'] 
-    k     = mesh_config['k'] 
-    gamma = mesh_config['gamma']
+    mesh_config_args = { # Default config
+        'dt': 0.001,
+        'gamma': 0.5,
+        'k0': 0.01,
+        'k': 0.4,
+        'num_iters': 1000,
+        'max_iters': 100000,
+        'stop_v_max': 0.01,
+        'dt_max': 1000,
+        'start_cap': 0.1,
+        'final_cap': 1.0,
+        'prefer_orig_order': True,
+        'remove_drift': False # for some reason, setting this to True actually introduces drift
+    }
+    mesh_config_args.update(mesh_config) # Update with user-defined values if they exist
+    mesh_config_args['stride'] = [stride, stride]
 
     # Warp parameters
     work_size = warp_config['work_size']   
     overlap   = warp_config['overlap'] 
     
     # Paths
-    dataset_name = os.path.basename(os.path.abspath(dataset_path))
     destination_path = os.path.abspath(destination_path)
     dataset_path = os.path.abspath(dataset_path)
     
     # Open input dataset
-    dataset = ts.open({'driver': 'zarr',
-                       'kvstore': {
-                             'driver': 'file',
-                             'path': dataset_path,
-                                  }
-                      },
-                      dtype=ts.uint8
-                      ).result()
+    dataset = open_store(dataset_path, mode='r', dtype=ts.uint8)
+
+    # Check whether stack was processed
+    attrs = get_store_attributes(dataset)
+    if attrs.get('z_aligned', False) == True and not overwrite:
+        logging.info(f'Dataset {dataset_name} was already processed and will be skipped.')
+        return False
     
     # Keep within bounds
     original_shape = dataset.shape
     if local_z_min is not None and local_z_max is not None:
         dataset = dataset[local_z_min: local_z_max]
 
-    try:
-        dataset_mask = ts.open({'driver': 'zarr',
-                                'kvstore': {
-                                        'driver': 'file',
-                                        'path': os.path.abspath(dataset_path) + '_mask',
-                                            }
-                                },
-                                dtype=ts.bool
-                                ).result()
-        
-        dataset_mask = dataset_mask[dataset.domain]
-    except ValueError as e:
-        if 'NOT_FOUND' in str(e):
-            dataset_mask = None
-        else:
-            raise e
-    except Exception as e:
-        raise e
-        
-    # Check whether stack was processed
-    attrs = get_dataset_attributes(dataset)
-    if attrs.get('z_aligned', False) == True and not overwrite:
-        logging.info(f'Dataset {dataset_name} was already processed and will be skipped.')
-        return False
+    dataset_mask = open_store(os.path.abspath(dataset_path) + '_mask', mode='r', dtype=ts.bool, allow_missing=True)
+    dataset_mask = dataset_mask[dataset.domain] if dataset_mask is not None else dataset_mask
 
     # Make the resolution match the target
     res = attrs['resolution'][-1]
@@ -126,34 +129,14 @@ def align_stack_z(destination_path,
     logging.info(f'Target scale ({dataset_name}): {target_scale}')
     
     #---------- Open destination(s) ----------#
-    destination = ts.open({'driver': 'zarr',
-                           'kvstore': {
-                                 'driver': 'file',
-                                 'path': destination_path,
-                                      }
-                          },
-                          dtype=ts.uint8
-                          ).result()
-    destination_mask = ts.open({'driver': 'zarr',
-                                'kvstore': {
-                                        'driver': 'file',
-                                        'path': destination_path + '_mask',
-                                            }
-                                },
-                                dtype=ts.bool
-                                ).result()
-    
+    destination = open_store(destination_path, mode='r+', dtype=ts.uint8)
+    destination_mask = open_store(destination_path + '_mask', mode='r+', dtype=ts.bool)
+
+    ds_destination = None
     if save_downsampled > 1:
-        ds_output_path, project_name = destination_path.rsplit('/', maxsplit=1)
-        ds_output_path = os.path.join(ds_output_path, f'{save_downsampled}x_' + project_name)
-        ds_destination = ts.open({'driver': 'zarr',
-                                  'kvstore': {
-                                          'driver': 'file',
-                                          'path': ds_output_path,
-                                              }
-                                  },
-                                  dtype=ts.uint8
-                                  ).result()
+        ds_output_path, project_name_from_path = destination_path.rsplit('/', maxsplit=1)
+        ds_output_path = os.path.join(ds_output_path, f'{save_downsampled}x_' + project_name_from_path)
+        ds_destination = open_store(ds_output_path, mode='r+', dtype=ts.uint8)
                 
     #---------- Compute flow ----------#
     if first_slice is not None:
@@ -162,24 +145,45 @@ def align_stack_z(destination_path,
                                         reverse=True)
         first_slice_mask = destination_mask[z].read().result()
     elif dataset.shape[0] > 1:
-        # More than one images
+        # More than one image
         first_slice_mask = None
     else:
         # No need to compute flow because we only have one image and it is the first one
         data = dataset[dataset.domain.inclusive_min[0]].read().result() # First slice within bounds
-        data = downsample(data, target_scale)
+        data = resample(data, target_scale)
         
         if dataset_mask is not None:
             data_mask = dataset_mask[dataset_mask.domain.inclusive_min[0]].read().result()
-            data_mask = downsample(data_mask, target_scale)
+            data_mask = resample(data_mask, target_scale)
         else:
             data_mask = compute_greyscale_mask(data)
 
-        write_data(destination, data, z_offset, np.abs(xy_offset), save_downsampled, ds_destination)
-        write_data(destination_mask, data_mask, z_offset, np.abs(xy_offset))
+        # To full resolution destination
+        write_data(destination,
+                   data,
+                   z_offset,
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To destination mask
+        write_data(destination_mask,
+                   data_mask,
+                   z_offset,
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To downsampled destination
+        if save_downsampled != 1:
+            write_data(ds_destination,
+                       data,
+                       z_offset,
+                       np.abs(xy_offset),
+                       preserve_mask = None,
+                       downsample_factor = 1/save_downsampled,
+                       resolve = True)
 
         attrs['z_aligned'] = True
-        set_dataset_attributes(dataset, attrs)
+        set_store_attributes(dataset, attrs)
         return True
         
     # Compute flow and save to file
@@ -191,39 +195,84 @@ def align_stack_z(destination_path,
                                            stride=stride, 
                                            max_deviation=max_deviation,
                                            max_magnitude=max_magnitude,
-                                           db_name=db_name,
+                                           db=db,
                                            destination_path=os.path.dirname(os.path.abspath(destination_path)),
                                            ref_slice=first_slice,
                                            ref_slice_mask=first_slice_mask,
-                                           target_scale=target_scale)
+                                           target_scale=target_scale,
+                                           z_offset=z_offset)
 
     #---------- Compute mesh ----------#
-    # Elasticity ratio = k0/k (the larger the more deformation)
-    # The ratio is what matters for how much the data is deformed
-    # However smaller numbers might limit the necessary deformation of the mesh
-    # Good values:
-    # k0 = 0.01 # inter-section springs (elasticity). High k0 results in images that tend to "fold" onto themselves
-    # k = 0.4 # intra-section springs (elasticity). Increase if data deforms too much
-    # gamma = 0.5 # dampening factor. Increase if data drift over time
-    out_path_meshes = os.path.dirname(destination_path) + '/flow_meshes'
+    out_path_meshes = os.path.join(os.path.dirname(destination_path), 
+                                   'z_intermediate', 
+                                   'inverse_map')
     os.makedirs(out_path_meshes, exist_ok=True)
-    inv_map_path = os.path.join(out_path_meshes, dataset_name + '.npy')
-    vmax_path = os.path.join(out_path_meshes, dataset_name + '_vmax.npy')
-    
-    mesh_config = mesh.IntegrationConfig(dt=0.001, gamma=0.5, k0=0.1, k=0.4,
-                                         stride=(stride, stride),
-                                         num_iters=1000,max_iters=100000,
-                                         stop_v_max=0.002, dt_max=2, 
-                                         start_cap=0.1, final_cap=1.0,
-                                         prefer_orig_order=True, remove_drift=True)
-    
+    inv_map_path = os.path.join(out_path_meshes, dataset_name)
+    mesh_config = mesh.IntegrationConfig(**mesh_config_args)
+
     if not os.path.exists(inv_map_path):
-        inv_map, _, v_max = get_inv_map_mod(flow, stride, dataset_name, mesh_config)
-        np.save(inv_map_path, inv_map)
-        np.save(vmax_path, v_max)
+        inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config)
+
+        # Create and write inv_map tensorstore
+        inv_map_store = open_store(
+            inv_map_path,
+            mode='a',
+            dtype=ts.float64,
+            shape=list(inv_map.shape),  # [2, z, y, x]
+            chunks=[2, 1, min(512, inv_map.shape[2]), min(512, inv_map.shape[3])],
+            axis_labels=['c', 'z', 'y', 'x']
+        )
+        inv_map_store[:].write(inv_map).result()
+
+        # Save mesh integration config as attributes
+        set_store_attributes(inv_map_store, {
+            'mesh_config': mesh_config_args,
+            'stride': stride,
+            'dataset_name': dataset_name,
+            'description': 'Inverse displacement map from mesh relaxation'
+        })
     else:
-        inv_map = np.load(inv_map_path)
-    
+        # Load from existing tensorstore, but first validate parameters
+        inv_map_store = open_store(inv_map_path, mode='r')
+        stored_attrs = get_store_attributes(inv_map_store)
+
+        # Check if mesh_config and stride match current settings
+        params_match = stored_attrs.get('mesh_config') == mesh_config_args
+
+        if not params_match and overwrite:
+            logging.warning(f'Stored mesh parameters do not match current settings. Recomputing inverse map.')
+            logging.info(f'Stored mesh_config: {stored_attrs.get("mesh_config")}')
+            logging.info(f'Current mesh_config: {mesh_config_args}')
+            logging.info(f'Stored stride: {stored_attrs.get("stride")}, Current stride: {stride}')
+
+            # Recompute with current parameters
+            inv_map, _ = get_inv_map(flow, stride, dataset_name, mesh_config)
+
+            # Overwrite existing store
+            inv_map_store = open_store(
+                inv_map_path,
+                mode='w',
+                dtype=ts.float64,
+                shape=list(inv_map.shape),
+                chunks=[2, 1, min(512, inv_map.shape[2]), min(512, inv_map.shape[3])],
+                axis_labels=['c', 'z', 'y', 'x']
+            )
+            inv_map_store[:].write(inv_map).result()
+
+            # Update attributes with current settings
+            set_store_attributes(inv_map_store, {
+                'mesh_config': mesh_config_args,
+                'stride': stride,
+                'dataset_name': dataset_name,
+                'description': 'Inverse displacement map from mesh relaxation'
+            })
+        elif params_match:
+            logging.info('Loading existing mesh')
+            # Parameters match, safe to use cached inverse map
+            inv_map = inv_map_store[:].read().result()
+        else:
+            raise RuntimeError('Stored mesh parameters do not match current settings but overwrite is set to False.')
+
     #---------- Render data ----------#
     # Get first slice
     if first_slice is None:
@@ -232,46 +281,76 @@ def align_stack_z(destination_path,
         first, z = find_ref_slice(dataset, 
                                   dataset.domain.inclusive_min[0], 
                                   reverse=False)
-        first = downsample(first, target_scale)
+        first = resample(first, target_scale)
         if dataset_mask is not None:
             first_mask = dataset_mask[z].read().result()
-            first_mask = downsample(first_mask, target_scale)
+            first_mask = resample(first_mask, target_scale)
         else:
             first_mask = compute_greyscale_mask(first)
 
-        write_data(destination, first, 
-                   z + z_offset - dataset.domain.inclusive_min[0], # z_offset relates to the original minimum
-                   np.abs(xy_offset), save_downsampled, ds_destination)
-        write_data(destination_mask, first_mask, 
-                   z + z_offset - dataset.domain.inclusive_min[0], 
-                   np.abs(xy_offset))
+        # To full resolution destination
+        write_data(destination,
+                   first,
+                   z + z_offset - dataset.domain.inclusive_min[0],
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To destination mask
+        write_data(destination_mask,
+                   first_mask,
+                   z + z_offset - dataset.domain.inclusive_min[0],
+                   np.abs(xy_offset),
+                   preserve_mask = None,
+                   resolve = True)
+        # To downsampled destination
+        if save_downsampled != 1:
+            write_data(ds_destination,
+                       first,
+                       z + z_offset - dataset.domain.inclusive_min[0],
+                       np.abs(xy_offset),
+                       preserve_mask = None,
+                       downsample_factor = 1/save_downsampled,
+                       resolve = True)
         
         start = z + 1
     else:
         # All slices have to be warped to match the last slice of the previous stack
-        start = 0 + dataset.domain.inclusive_min[0]
+        start = dataset.domain.inclusive_min[0]
 
     # Start alignment
     output_shape = np.max(transform[:,:,-1], axis=0).astype(int)
     skipped = 0
-    for z in tqdm(range(start, dataset.shape[0]), 
+    empty = 0
+    step_name = 'render_z'
+    for z in tqdm(range(start, dataset.domain.exclusive_max[0]),
                     position=0,
-                    desc=f'{dataset_name}: Rendering aligned slices'):
+                    desc=f'{dataset_name}: Rendering aligned slices',
+                    dynamic_ncols=True,
+                    leave=True):
+
+        if check_progress(db, dataset_name, step_name, z):
+            skipped += 1 # Assume skipped slices are logged correctly
+            continue
+
         # Load data
         data = dataset[z].read().result()
+        global_z = z + z_offset - dataset.domain.inclusive_min[0]
 
         if not data.any():
             # If empty slice, skip and go to next z
+            empty += 1
             skipped += 1
+            metadata = {'empty_slice': True}
+            log_progress(db, dataset_name, step_name, z, global_z, metadata)
             continue
 
         # Resample if needed (target_scale != 1)
-        data = downsample(data, target_scale)
+        data = resample(data, target_scale)
 
         # Load or compute mask
         if dataset_mask is not None:
             data_mask = dataset_mask[z].read().result()
-            data_mask = downsample(data_mask, target_scale)
+            data_mask = resample(data_mask, target_scale)
         else:
             data_mask = compute_greyscale_mask(data)
 
@@ -283,11 +362,7 @@ def align_stack_z(destination_path,
                                              size=(data.shape[-1], data.shape[-2], 1))
         
         # Warp data in parallel. warp_subvolume uses one thread per image so we use ndimage_wrap instead
-        if first_slice is None:
-            inv_z = z - skipped
-        else:
-            inv_z = z + 1 - skipped
-
+        inv_z = z - start + 1
         aligned = ndimage_warp(
                         data, 
                         inv_map[:, inv_z, ...], 
@@ -310,70 +385,84 @@ def align_stack_z(destination_path,
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(3,3))
         aligned_mask = cv2.morphologyEx(aligned_mask.astype(np.uint8),cv2.MORPH_CLOSE,kernel).astype(bool)
 
-        # Writing bounding box
-        y1, y2, x1, x2 = mask_to_bbox(aligned_mask)
+        if overwrite:
+            # There may be data written to this slice so let's make sure it is overwritten
+            y1 = x1 = 0
+            y2, x2 = destination.shape[1:]
+            aligned = pad_to_shape(aligned, destination.shape[1:])
+            aligned_mask = pad_to_shape(aligned_mask, destination.shape[1:])
+            write_mask = None # This means we write everything even black space
+        else:
+            # Writing bounding box
+            y1, y2, x1, x2 = mask_to_bbox(aligned_mask)
+            write_mask = aligned_mask[y1:y2, x1:x2]
         
-        destination, ds_destination, _ = write_data(destination, 
-                                                    aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
-                                                    z + z_offset - dataset.domain.inclusive_min[0], # z_offset relates to original minimum
-                                                    aligned_mask[y1:y2, x1:x2], # Mask where to write the data
-                                                    np.abs(xy_offset) + np.array([x1, y1]), # Only write in the bounding box where the data is
-                                                    save_downsampled, ds_destination)
-        destination_mask, _ = write_data(destination_mask, 
-                                         aligned_mask[y1:y2, x1:x2], 
-                                         z + z_offset - dataset.domain.inclusive_min[0], 
-                                         aligned_mask[y1:y2, x1:x2],
-                                         np.abs(xy_offset) + np.array([x1, y1]), 
-                                         1, None)
+        # Write data
+        offset = np.abs(xy_offset) + np.array([x1, y1])
+
+        # To full resolution destination
+        write_data(destination,
+                   aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
+                   global_z, # z_offset relates to original minimum
+                   offset, # Only write in the bounding box where the data is
+                   preserve_mask = write_mask, # Mask where to write the data
+                   resolve = True)
+        # To destination mask
+        write_data(destination_mask,
+                   aligned_mask[y1:y2, x1:x2], # Only write in the bounding box where the data is
+                   global_z, # z_offset relates to original minimum
+                   offset, # Only write in the bounding box where the data is
+                   preserve_mask = write_mask, # Mask where to write the data
+                   resolve = True)
+        # To downsampled destination
+        if save_downsampled != 1:
+            write_data(ds_destination,
+                       aligned[y1:y2, x1:x2], # Only write in the bounding box where the data is
+                       global_z, # z_offset relates to original minimum
+                   offset, # Only write in the bounding box where the data is
+                   preserve_mask = write_mask, # Mask where to write the data
+                   downsample_factor = 1/save_downsampled,
+                   resolve = True)
         
-    logging.info(f'{dataset_name}: Done. ({skipped} empty slices)')
+        # Log progress
+        metadata = {
+            'empty_slice': False,
+            'warp_config': warp_config,
+            'mesh_config': mesh_config_args,
+            'overwrite': overwrite,
+            'bbox': [int(y1), int(y2), int(x1), int(x2)]
+        }
+        log_progress(db, dataset_name, step_name, global_z, z, metadata)
+    logging.info(f'{dataset_name}: Done.')
+    logging.info(f'Empty slices: {empty}')
+    logging.info(f'Skipped already processed slices: {skipped}')
 
     # Add an attribute to keep track of what datasets have been aligned already
-    attrs['z_aligned'] = True
-    set_dataset_attributes(dataset, attrs)
+    attrs['z_aligned'] = True 
+    set_store_attributes(dataset, attrs)
 
     return True
 
 
-def write_data(destination, data, z, mask=None, xy_offset=[0,0], save_downsampled=1, ds_destination=None):
-    tasks = []
-    x_off, y_off = xy_offset
-
-    # Write to destination
-    y,x = data.shape
-    if np.any(destination.domain.exclusive_max < np.array([z+1, y+y_off, x+x_off])):
-        new_max = np.max([destination.domain.exclusive_max, [z+1, y+y_off, x+x_off]], axis=0)
-        destination = destination.resize(exclusive_max=new_max, expand_only=True).result()
-
-    if mask is not None:
-        # We assume that data already exists and we need to preserve it
-        og_data = destination[z, y_off:y+y_off, x_off:x+x_off].read().result()
-        og_data[mask] = data[mask]
-        data = og_data
-    
-    tasks.append(destination[z, y_off:y+y_off, x_off:x+x_off].write(data).result())
-
-    # Write downsampled data for inspection
-    if save_downsampled > 1 and ds_destination is not None:
-        ds_data = cv2.resize(data, None, fx=1/save_downsampled, fy=1/save_downsampled)
-        y,x = ds_data.shape
-        x_off, y_off = xy_offset // save_downsampled
-        if np.any(ds_destination.domain.exclusive_max < np.array([z+1, y+y_off, x+x_off])):
-            new_max = np.stack([ds_destination.domain.exclusive_max, [z+1, y+y_off, x+x_off]]).max(0)
-            ds_destination = ds_destination.resize(exclusive_max=new_max, expand_only=True).result()
-
-        tasks.append(ds_destination[z, y_off:y+y_off, x_off:x+x_off].write(ds_data).result())
-        return destination, ds_destination, tasks
-    else:
-        return destination, tasks
-
 if __name__ == '__main__':
 
-    config_file = sys.argv[1]
-    with open(config_file, 'r') as f:
+    parser = argparse.ArgumentParser(description='Align a stack in Z.')
+    parser.add_argument('config_file', type=str, help='Path to the JSON configuration file.')
+    parser.add_argument('--wipe-progress', action='store_true', help='Wipe progress for the specified stack before starting.')
+
+    args = parser.parse_args()
+
+    with open(args.config_file, 'r') as f:
         config = json.load(f)
 
-    params = inspect.signature(align_stack_z).parameters
-    relevant_args = {k: v for k, v in config.items() if k in params}
+    project_name = config.get('project_name')
+    if not project_name:
+        project_name = os.path.basename(config['destination_path']).rstrip('.zarr')
 
-    align_stack_z(**relevant_args)
+    mongodb_config_filepath = config.get('mongodb_config_filepath')
+
+    config['project_name'] = project_name
+    config['mongodb_config_filepath'] = mongodb_config_filepath
+    config['wipe_progress_flag'] = args.wipe_progress
+
+    align_stack_z(**config)

@@ -1,6 +1,8 @@
 import json
+import logging
 import networkx as nx
 import numpy as np
+import os
 import pandas as pd
 
 from concurrent import futures
@@ -12,7 +14,7 @@ from emprocess.utils.io import get_dataset_attributes
 from emalign.io.store import find_ref_slice
 from ..arrays.sift import estimate_transform_sift
 from ..arrays.stacks import Stack
-from ..arrays.utils import downsample
+from ..arrays.utils import resample
 from ..visualize.nglancer import add_layers, start_nglancer_viewer
 from ..align_z.utils import get_ordered_datasets
 
@@ -28,21 +30,43 @@ def find_offset_from_main_config(main_config_path):
         int: Z offset of a new stack that would follow the one represented by main_config (i.e. previous stack end + 1)
     '''
 
+    if not os.path.exists(main_config_path):
+        raise FileNotFoundError(f'Config file not found: {main_config_path}')
+
     with open(main_config_path, 'r') as f:
         main_config = json.load(f)
 
+    if 'stack_configs' not in main_config:
+        raise ValueError(f'Invalid config: missing "stack_configs" key in {main_config_path}')
+
+    stack_configs = main_config['stack_configs']
+    if not stack_configs:
+        raise ValueError(f'No stacks found in config: {main_config_path}')
+
     z_offsets = []
-    for stack_config in main_config['stack_configs'].values():
-        with open(stack_config, 'r') as f:
+    for stack_name, config_path in stack_configs.items():
+        if not os.path.exists(config_path):
+            logging.warning(f'Stack config not found: {config_path}, skipping')
+            continue
+
+        with open(config_path, 'r') as f:
             stack_config = json.load(f)
-        
+
+        if 'z_end' not in stack_config:
+            logging.warning(f'Missing z_end in {config_path}, skipping')
+            continue
+
         z_offsets.append(stack_config['z_end'])
+
+    if not z_offsets:
+        raise ValueError(f'No valid z_end values found in any stack configs')
 
     return max(z_offsets) + 1
 
 
 def get_stacks(stack_paths, 
-               invert_instructions):
+               invert_instructions,
+               io_backend):
     '''Get segments of potentially overlapping stacks from paths. 
 
     Use a list of tileset paths to fetch stacks and split them into overlapping segments.
@@ -59,8 +83,11 @@ def get_stacks(stack_paths,
     # Load stacks
     stacks = []
     for stack_path in stack_paths:
-        stack = Stack(stack_path)
+        stack = Stack(stack_path, io_backend=io_backend)
         stack._get_tilemaps_paths()
+        if stack.stack_name not in invert_instructions:
+            logging.error(f'Stack "{stack.stack_name}" not found in invert_instructions')
+            raise ValueError(f'Missing invert instructions for stack: {stack.stack_name}')
         for k in stack.tile_maps_invert.keys():
             stack.tile_maps_invert[k]=invert_instructions[stack.stack_name]
         stacks.append(stack) 
@@ -94,9 +121,12 @@ def get_stacks(stack_paths,
             for z in group_df.z:
                 tile_map[z] = group_df.loc[group_df.z == z, 'tile_paths'].item()[0]
             
-            stack = Stack()
+            stack = Stack(io_backend=io_backend)
             stack.stack_name = new_stack_name
             stack._set_tilemaps_paths(tile_map)
+            if stack_names[0] not in invert_instructions:
+                logging.error(f'Stack "{stack_names[0]}" not found in invert_instructions')
+                raise ValueError(f'Missing invert instructions for stack: {stack_names[0]}')
             stack.tile_maps_invert = {k: invert_instructions[stack_names[0]] for k in tile_map[z].keys()}
 
             new_stacks[new_stack_name] = stack
@@ -110,9 +140,12 @@ def get_stacks(stack_paths,
                 for z in group_df.z:
                     tile_map[z] = group_df.loc[group_df.z == z, 'tile_paths'].item()[i]
 
-                stack = Stack()
+                stack = Stack(io_backend=io_backend)
                 stack.stack_name = new_stack_name
                 stack._set_tilemaps_paths(tile_map)
+                if stack_names[i] not in invert_instructions:
+                    logging.error(f'Stack "{stack_names[i]}" not found in invert_instructions')
+                    raise ValueError(f'Missing invert instructions for stack: {stack_names[i]}')
                 stack.tile_maps_invert = {k: invert_instructions[stack_names[i]] for k in tile_map[z].keys()}
 
                 pair.append(stack)
@@ -146,9 +179,14 @@ def check_stacks_to_invert(stack_list,
     with futures.ThreadPoolExecutor(num_workers) as tpe:
         fs = {}
         for stack_path in sorted(stack_list):
-            stack_name = stack_path.split('/')[-2]
-            fs[stack_name] = tpe.submit(load_tif, 
-                                        glob(stack_path + '*.tif')[0], 1, {})
+            stack_name = os.path.basename(os.path.normpath(stack_path))
+            tif_files = glob(os.path.join(stack_path, '*.tif'))
+            if not tif_files:
+                logging.warning(f'No TIF files found in {stack_path}, skipping')
+                to_invert[stack_name] = False
+                continue
+
+            fs[stack_name] = tpe.submit(load_tif, tif_files[0], 1, {})
 
         for i, (stack_name, f) in enumerate(fs.items()):
             arr = f.result()[0]
@@ -156,14 +194,14 @@ def check_stacks_to_invert(stack_list,
                         viewer,
                         names=[stack_name],
                         clear_viewer=True)
-            
-            answer = input(f'{str(i+1).zfill(2)}/{len(fs)} - Invert {stack_name}? (y/n) ').strip(' ')
-            while answer not in ['y', 'n', '']:
-                answer = input(f'{str(i).zfill(2)}/{len(fs)} - Please provide a valid answer for {stack_name}: (y/n) ')
 
-            if answer == 'y' or answer == '':
+            answer = input(f'{str(i+1).zfill(2)}/{len(fs)} - Invert {stack_name}? (y/n) ').strip(' ')
+            while answer.lower() not in ['y', 'n', '']:
+                answer = input(f'{str(i+1).zfill(2)}/{len(fs)} - Please provide a valid answer for {stack_name}: (y/n) ').strip(' ')
+
+            if answer.lower() == 'y':
                 to_invert.update({stack_name: True})
-            elif answer == 'n':
+            elif answer.lower() == 'n' or answer == '':
                 to_invert.update({stack_name: False})
     return to_invert
 
@@ -204,8 +242,8 @@ def create_configs_fused_stacks(main_config_path,
             # Downsample if necessary
             yx_res = get_dataset_attributes(ds)['resolution'][-1]
             target_scale = yx_res/target_res
-            img, _ = find_ref_slice(ds, z - z_offsets[i][0]) # Could be better by accounting for gaps
-            images.append(downsample(img, target_scale))
+            img, _ = find_ref_slice(ds, z - z_offsets[i, 0]) # Could be better by accounting for gaps
+            images.append(resample(img, target_scale))
 
         # Test images and store valid matches
         G = nx.Graph()

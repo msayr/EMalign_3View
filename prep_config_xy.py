@@ -15,9 +15,8 @@ import numpy as np
 import pandas as pd
 import sys
 
-from emalign.align_xy.tile_map_positions import estimate_tile_map_positions
 from emalign.align_xy.prep import find_offset_from_main_config, get_stacks, check_stacks_to_invert
-from emalign.io.volumescope import get_tilesets
+from emalign.io.backend import get_io_backend
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
@@ -26,7 +25,7 @@ logging.getLogger('jax._src.xla_bridge').setLevel(logging.WARNING)
 
 def prep_align_stacks(main_dir,
                       project_dir,
-                      output_path,
+                      output_name,
                       dir_pattern,
                       resolution,
                       offset,
@@ -37,36 +36,53 @@ def prep_align_stacks(main_dir,
                       apply_clahe,
                       prev_cfg,
                       num_workers,
-                      port):
+                      port,
+                      io_mode='volumescope',
+                      project_name=None,
+                      force_overwrite=False):
     
-    config_dir = os.path.join(project_dir, 'config')
+    io_backend = get_io_backend(io_mode)
+    
+    # Make config dir
+    config_dir = os.path.join(project_dir, 'config', 'xy_config')
     os.makedirs(config_dir, exist_ok=True)
-    logging.info(f'Configs will be stored at: {project_dir}')
+    logging.info(f'Configs and outputs will be stored at: {project_dir}')
 
-    if os.path.exists(os.path.join(config_dir, 'main_config.json')):
-        logging.info('Config already exists in dir, exiting process...')
-        sys.exit()
+    main_config_path = os.path.join(config_dir, 'main_config.json')
+    if os.path.exists(main_config_path) and not force_overwrite:
+        response = input(f'Config already exists at {main_config_path}.\nOverwrite? [y/N] ')
+        if response.lower() != 'y':
+            logging.info('Exiting without overwriting existing config')
+            sys.exit(0)
+        else:
+            logging.info('Overwriting existing config')
 
+    # Create output path
+    output_name = output_name if output_name.endswith('.zarr') else output_name.rstrip('. ') + '.zarr'
+    output_path = os.path.join(project_dir, output_name)
+
+    # Determine the offset from a previous dataset that this one relates to
     if prev_cfg is not None:
         offset[0] = find_offset_from_main_config(prev_cfg)
         logging.info(f'Determined z offset from previous dataset: {offset[0]}')
 
     # Find tilesets with desired resolution
     logging.info(f'Looking for tilesets in: {main_dir}')
-    stack_paths = get_tilesets(main_dir, resolution, dir_pattern, num_workers)
+    stack_paths = io_backend.get_tilesets(main_dir, resolution, dir_pattern, num_workers)
 
     logging.info(f'Found {len(stack_paths)} directories corresponding to resolution {resolution}: ')
     for s in stack_paths:
         logging.info(f'    {s}')
-        
+
     if not stack_paths:
-        sys.exit(f'No directory corresponding to the query was found at {main_dir}')
+        logging.error(f'No directory corresponding to the query was found at {main_dir}')
+        sys.exit(1)
 
     # Invert stack?
     logging.info('Please check whether to invert stacks')
     invert_instructions = check_stacks_to_invert(stack_paths, num_workers, bind_port=port)
 
-    stacks = get_stacks(stack_paths, invert_instructions)
+    stacks = get_stacks(stack_paths, invert_instructions, io_backend=io_backend)
 
     # Look for overlapping stacks
     combined_stacks = {k:v for k,v in stacks.items() if isinstance(v, list)}
@@ -117,7 +133,8 @@ def prep_align_stacks(main_dir,
         with open(config_path, 'w') as f:
             json.dump(config_stack, f, indent='')
 
-    project_name = input('Please name the project: ')
+    if project_name is None:
+        project_name = input('Please name the project: ')
 
     main_config = {
                 'project_name': project_name,
@@ -153,10 +170,10 @@ if __name__ == '__main__':
                               Subdirectories are expected to contain tif and info files.')
     parser.add_argument('-o', '--output_zarr',
                         metavar='OUT_ZARR',
-                        dest='output_path',
+                        dest='output_name',
                         required=True,
                         type=str,
-                        help='Path to the zarr container where to write stitched tifs.')
+                        help='Name for the zarr container that will contain stitched files. Will be written in project_dir.')
     parser.add_argument('-p', '--project-dir',
                         metavar='PROJECT_DIR',
                         dest='project_dir',
@@ -200,7 +217,7 @@ if __name__ == '__main__':
     parser.add_argument('--scale',
                         metavar='SCALE',
                         dest='scale',
-                        type=int,
+                        type=float,
                         default=0.5,
                         help='Downsampling scale to use for computing the elastic mesh. Lower values speed up the process but may fail. \
                               If a stack fails, it will temporarily use scale=1 (no downsampling). \
@@ -234,7 +251,24 @@ if __name__ == '__main__':
                         default=None,
                         type=str,
                         help='Path to the main_config of a previous part of the dataset. If provided, the z offset will be determined from the previous dataset.')
-    
+    parser.add_argument('--project-name',
+                        metavar='PROJECT_NAME',
+                        dest='project_name',
+                        default=None,
+                        type=str,
+                        help='Project name. If not provided, will prompt interactively.')
+    parser.add_argument('--force-overwrite',
+                        dest='force_overwrite',
+                        action='store_true',
+                        default=False,
+                        help='Force overwrite of existing config files without prompting.')
+    parser.add_argument('--mode',
+                        metavar='MODE',
+                        dest='io_mode',
+                        default='volumescope',
+                        type=str,
+                        help='Valid mode for the IO backend, defining how to parse info from file names (see emalign.io.backend for valid modes).')
+
     args=parser.parse_args()
 
 

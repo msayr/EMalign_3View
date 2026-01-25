@@ -1,8 +1,8 @@
 import numpy as np
 
-from emalign.utils.io import load_tilemap
-from emalign.utils.arrays import pad_to_shape
-from emalign.utils.offsets import estimate_transform_sift
+from .sift import estimate_transform_sift
+from .utils import pad_to_shape
+from ..io.tif import load_tilemap
 
 
 def get_tile_map_margins(tile_space, margin, margin_boundaries=10):
@@ -47,7 +47,8 @@ def estimate_tiles_overlap(img1,
         crop_img2 = img2[:, :overlap_search]
 
     # First, try increasing only compute scale
-    offset, _, valid_estimate = estimate_transform_sift(crop_img1, crop_img2, scale, refine_estimate=True)
+    M, _, _, valid_estimate, _ = estimate_transform_sift(crop_img1, crop_img2, scale, refine_estimate=True, return_raw_homology=True)
+    offset = M[:, 2]
 
     if valid_estimate:
         return overlap_search - np.abs(offset[::-1][axis])
@@ -115,10 +116,14 @@ class TileMap:
         if processing is not None:
             self.processing = processing
 
+        process_scheme = {
+                        "gaussian": {"kernel_size": [3,3], "sigma": 1}, 
+                        "clahe": {"clip_limit": 2, "tile_grid_size": [10,10]}
+                        }
+        process_scheme = {k:v for k,v in process_scheme.items() if self.processing.get(k)}
         _, self.tile_map, _ = load_tilemap({self.z: self.tile_map_paths}, 
                                             self.processing['tile_maps_invert'],
-                                            self.processing['gaussian'], 
-                                            self.processing['clahe'],
+                                            process_scheme,
                                             self.processing['scale'],
                                             skip_missing=False)
         
@@ -147,6 +152,5 @@ class TileMap:
             self.overlap = estimate_tilemap_overlap(self.tile_map, self.tile_space, scale=scale)
             return self.overlap
         else:
-            print('No overlap can be computed, only one image in tile_map.')
             self.overlap = None
             return None

@@ -5,9 +5,7 @@ import re
 from glob import glob
 from collections import defaultdict
 
-from emprocess.utils.io import load_tif
-
-from ..io.tif import load_tilemap
+from ..io.tif import load_tilemap, load_tif
 from .tile_map import TileMap
 
 

@@ -1,7 +1,7 @@
 from concurrent import futures
 from glob import glob
 
-from emprocess.utils.io import load_tif
+from emalign.io.tif import load_tif
 from .nglancer import *
 
 

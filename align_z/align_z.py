@@ -13,7 +13,7 @@ from sofima import flow_field, flow_utils, map_utils, mesh
 from sofima.mesh import relax_mesh, IntegrationConfig
 from tqdm import tqdm
 
-from emprocess.utils.mask import compute_greyscale_mask
+from emalign.io.process.mask import compute_greyscale_mask
 from ..io.store import find_ref_slice, open_store, write_ndarray, get_store_attributes, set_store_attributes
 from ..arrays.utils import resample, homogenize_arrays_shape, pad_to_shape
 from ..arrays.sift import estimate_transform_sift

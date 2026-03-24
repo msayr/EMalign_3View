@@ -12,7 +12,7 @@ import pandas as pd
 from cv2 import warpAffine
 from glob import glob
 
-from emprocess.utils.io import get_dataset_attributes
+from emalign.io.store import get_dataset_attributes
 
 from ..arrays.sift import estimate_transform_sift
 

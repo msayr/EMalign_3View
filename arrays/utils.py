@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from emprocess.utils.mask import mask_to_bbox
+from emalign.io.process.mask import mask_to_bbox
 
 def resample(array, ratio):
     '''

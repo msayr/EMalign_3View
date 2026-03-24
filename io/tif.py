@@ -1,4 +1,29 @@
-from emprocess.utils.io import load_tif
+import cv2
+import numpy as np
+
+from emalign.io.process.img_proc import process_image
+
+
+def load_tif(tif_path, scale=1, process_scheme={}, compute_mask=False):
+    '''
+    Load tif using OpenCV
+    '''
+
+    img = cv2.imread(tif_path, cv2.IMREAD_GRAYSCALE)
+    
+    if img is None:
+        return None, None, None
+
+    img = np.array(img)
+
+    # Process image
+    img, mask = process_image(img, process_scheme, compute_mask)
+
+    # Downsample
+    if scale < 1:
+        return img, cv2.resize(img, None, fx=scale, fy=scale), mask
+
+    return img, None, mask
 
 
 def load_tilemap(tile_map_paths, invert, process_scheme, scale, skip_missing=False):

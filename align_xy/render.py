@@ -2,7 +2,7 @@ import numpy as np
 
 from sofima import warp
 
-from emprocess.utils.mask import mask_to_bbox
+from emalign.io.process.mask import mask_to_bbox
 
 from .utils import check_stitch
 from ..io.store import write_data

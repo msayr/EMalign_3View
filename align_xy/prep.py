@@ -9,9 +9,8 @@ from concurrent import futures
 from itertools import combinations
 from glob import glob
 
-from emprocess.utils.io import load_tif
-from emprocess.utils.io import get_dataset_attributes
-from emalign.io.store import find_ref_slice
+from emalign.io.tif import load_tif
+from emalign.io.store import find_ref_slice, get_dataset_attributes
 from ..arrays.sift import estimate_transform_sift
 from ..arrays.stacks import Stack
 from ..arrays.utils import resample

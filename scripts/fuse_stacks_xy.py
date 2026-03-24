@@ -9,11 +9,11 @@ import tensorstore as ts
 
 from glob import glob
 from tqdm import tqdm
-from emprocess.utils.io import get_dataset_attributes, set_dataset_attributes
-from emprocess.utils.mask import compute_greyscale_mask
 
 from emalign.align_xy.prep import create_configs_fused_stacks
 from emalign.arrays.utils import compute_laplacian_var, compute_sobel_mean, compute_grad_mag, resample
+from emalign.io.store import get_dataset_attributes, set_dataset_attributes
+from emalign.io.process.mask import compute_greyscale_mask
 
 
 # TODO: add a first slice test to make sure it is not missing images

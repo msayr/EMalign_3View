@@ -11,8 +11,8 @@ from connectomics.common import bounding_box
 from sofima import flow_field, flow_utils, mesh
 from sofima.warp import ndimage_warp
 
-from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
-from emprocess.utils.transform import rotate_image
+from emalign.io.process.mask import compute_greyscale_mask, mask_to_bbox
+from emalign.io.process.transform import rotate_image
 
 from ..arrays.sift import estimate_transform_sift
 from ..arrays.utils import homogenize_arrays_shape, xy_offset_to_pad, compute_laplacian_var

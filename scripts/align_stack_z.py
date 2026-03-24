@@ -17,12 +17,13 @@ from tqdm import tqdm
 
 from sofima import mesh
 from sofima.warp import ndimage_warp
-from emprocess.utils.mask import compute_greyscale_mask, mask_to_bbox
 
 from emalign.align_z.align_z import compute_flow_dataset, get_inv_map
 from emalign.io.store import find_ref_slice, open_store, set_store_attributes, get_store_attributes, write_data
 from emalign.arrays.utils import resample, pad_to_shape
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress, check_progress, log_progress
+from emalign.io.process.mask import compute_greyscale_mask, mask_to_bbox
+
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)

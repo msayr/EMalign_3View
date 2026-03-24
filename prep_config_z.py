@@ -18,11 +18,9 @@ import sys
 from glob import glob
 from typing import List, Optional
 
-from emprocess.utils.io import get_dataset_attributes
-
 from emalign.align_z.config import add_config_metadata, validate_config_directory, CONFIG_VERSION
 from emalign.align_z.utils import compute_alignment_path, determine_initial_offset, get_ordered_datasets
-
+from emalign.io.store import get_dataset_attributes
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)

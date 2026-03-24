@@ -272,12 +272,4 @@ if __name__ == '__main__':
 
     args=parser.parse_args()
 
-
-    try:
-        GPU_ids = os.environ['CUDA_VISIBLE_DEVICES']
-    except Exception:
-        print('To select GPUs, specify it before running python, e.g.: CUDA_VISIBLE_DEVICES=0,1 python script.py')
-        sys.exit()
-    print(f'Available GPU IDs: {GPU_ids}')
-
     prep_align_stacks(**vars(args)) 

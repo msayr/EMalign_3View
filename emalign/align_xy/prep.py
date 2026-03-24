@@ -10,7 +10,7 @@ from itertools import combinations
 from glob import glob
 
 from emalign.io.tif import load_tif
-from emalign.io.store import find_ref_slice, get_dataset_attributes
+from emalign.io.store import find_ref_slice, get_store_attributes
 from ..arrays.sift import estimate_transform_sift
 from ..arrays.stacks import Stack
 from ..arrays.utils import resample
@@ -239,7 +239,7 @@ def create_configs_fused_stacks(main_config_path,
             ds = datasets[i]
 
             # Downsample if necessary
-            yx_res = get_dataset_attributes(ds)['resolution'][-1]
+            yx_res = get_store_attributes(ds)['resolution'][-1]
             target_scale = yx_res/target_res
             img, _ = find_ref_slice(ds, z - z_offsets[i, 0]) # Could be better by accounting for gaps
             images.append(resample(img, target_scale))

@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from emalign.align_xy.prep import create_configs_fused_stacks
 from emalign.arrays.utils import compute_laplacian_var, compute_sobel_mean, compute_grad_mag, resample
-from emalign.io.store import get_dataset_attributes, set_dataset_attributes
+from emalign.io.store import get_store_attributes, set_store_attributes
 from emalign.io.process.mask import compute_greyscale_mask
 
 
@@ -121,7 +121,7 @@ def fuse_stacks_group(config,
 
         # In case we need to resample
         if target_res is not None:
-            s = get_dataset_attributes(ds)['resolution'][-1] / target_res
+            s = get_store_attributes(ds)['resolution'][-1] / target_res
         else:
             s = 1
         
@@ -252,14 +252,14 @@ def fuse_stacks_group(config,
         log_progress(db, destination_name, step_name, global_slice_index, z, metadata)
 
     # Destination takes the same attributes as the stacks we just processed
-    attributes = get_dataset_attributes(datasets[0]['dataset'])
+    attributes = get_store_attributes(datasets[0]['dataset'])
     attributes['resolution'][1] = attributes['resolution'][2] = target_res
     attributes['voxel_size'] = attributes['resolution']
     attributes['voxel_offset'][0] = config['zmin']
     attributes['offset'][0] = config['zmin'] * attributes['resolution'][0]
     attributes['z_aligned'] = False # This should not exist but let's be safe
-    set_dataset_attributes(destination, attributes)
-    set_dataset_attributes(destination_mask, attributes)
+    set_store_attributes(destination, attributes)
+    set_store_attributes(destination_mask, attributes)
     
 
 def align_fused_stacks_xy(config_path,

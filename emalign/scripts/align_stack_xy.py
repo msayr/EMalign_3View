@@ -24,7 +24,7 @@ from emalign.align_xy.render import render_slice_xy
 from emalign.align_xy.stitch_ongrid import get_coarse_offset, get_elastic_mesh
 from emalign.arrays.stacks import Stack, parse_stack_info
 from emalign.arrays.tile_map import get_tile_map_margins
-from emalign.io import open_store, set_store_attributes
+from emalign.io.store import open_store, set_store_attributes
 from emalign.io.progress import get_mongo_client, get_mongo_db, log_progress, check_progress, wipe_progress
 from emalign.io.backend import get_io_backend
 
@@ -122,10 +122,10 @@ def align_stack_xy(output_path,
     #####################
     ### PROCESS STACK ###
     #####################
-    step_name = "align_xy_render"
+    step_name = 'align_xy'
     pbar = tqdm(stack.slices, position=2, desc=f'{stack.stack_name}: Processing', leave=False)
     for z in pbar:
-        if check_progress(db, stack.stack_name, step_name, z) and not overwrite:
+        if check_progress(db, stack.stack_name, step_name, z - z_offset) and not overwrite:
             pbar.set_description(f'{stack.stack_name}: Skipping...')
             continue
         pbar.set_description(f'{stack.stack_name}: Loading tile_map...')
@@ -134,8 +134,14 @@ def align_stack_xy(output_path,
         
         metadata = {}
         if len(tile_map) > 1:
-            # There are more than one tiles            
-            overlap = tm.estimate_overlap(scale=0.1)
+            # There are more than one tiles    
+            for scale in [0.1, 0.2, 0.5, 1]:
+                overlap = tm.estimate_overlap(scale=scale)
+                if overlap > 0:
+                    break
+            else:
+                raise RuntimeError('No overlap found between tiles for this slice.')
+
             pbar.set_description(f'{stack.stack_name}: Computing elastic meshes...')
             # Compute overlap for better coarse mesh estimation
             overlap_pad = 80

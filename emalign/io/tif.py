@@ -1,15 +1,18 @@
 import cv2
 import numpy as np
+from tifffile import TiffFile
 
 from emalign.io.process.img_proc import process_image
 
 
 def load_tif(tif_path, scale=1, process_scheme={}, compute_mask=False):
     '''
-    Load tif using OpenCV
+    Load tif file.
+    ToDo: add support for reading and saving metadata so it could be used for speeding up susbsequent steps.
     '''
 
-    img = cv2.imread(tif_path, cv2.IMREAD_GRAYSCALE)
+    tif = TiffFile(tif_path)
+    img = tif.asarray()
     
     if img is None:
         return None, None, None

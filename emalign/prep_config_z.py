@@ -20,7 +20,7 @@ from typing import List, Optional
 
 from emalign.align_z.config import add_config_metadata, validate_config_directory, CONFIG_VERSION
 from emalign.align_z.utils import compute_alignment_path, determine_initial_offset, get_ordered_datasets
-from emalign.io.store import get_dataset_attributes
+from emalign.io.store import get_store_attributes
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('absl').setLevel(logging.WARNING)
@@ -247,7 +247,7 @@ def prep_config_z(project_dir: str,
     # Print dataset info
     logging.info('Datasets Z offsets:')
     for dataset, z in zip(datasets, z_offsets):
-        yx_res = get_dataset_attributes(dataset)['resolution'][1:]
+        yx_res = get_store_attributes(dataset)['resolution'][1:]
         logging.info(f'    {z[0]} (res: {yx_res}): {os.path.basename(os.path.abspath(dataset.kvstore.path))}')
 
     if isinstance(yx_target_resolution, list):

@@ -1,4 +1,5 @@
 notebooks/
 config/
 __pycache__/
+build/
 *.egg-info

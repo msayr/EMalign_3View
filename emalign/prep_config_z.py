@@ -280,10 +280,7 @@ def prep_config_z(project_dir: str,
     logging.info(f'Number of alignment paths: {len(paths)}')
     logging.info(f'\nConfiguration complete!')
     logging.info(f'Config directory: {output_configs_dir}')
-    logging.info(f'\nTo run alignment:')
-    logging.info(f'  CUDA_VISIBLE_DEVICES=0,1 python -m emalign.align_dataset_z \\')
-    logging.info(f'    -p {project_dir} \\')
-    logging.info(f'    -c {num_workers}')
+    logging.info(f'\n\nTo run alignment:\nCUDA_VISIBLE_DEVICES=0,1 python align_dataset_z -p {project_dir} -c {num_workers}')
 
     return output_configs_dir
 

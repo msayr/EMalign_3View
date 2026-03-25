@@ -31,7 +31,7 @@ from typing import List, Optional
 
 from emalign.align_z.config import load_align_plan, load_dataset_configs, validate_config_directory
 from emalign.scripts.align_stack_z import align_stack_z
-from emalign.io import open_store
+from emalign.io.store import open_store
 from emalign.io.progress import get_mongo_client, get_mongo_db, wipe_progress
 
 

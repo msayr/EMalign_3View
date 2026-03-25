@@ -161,7 +161,17 @@ def compute_alignment_path(datasets,
     
     if isinstance(target_resolution, int):
         target_resolution = [target_resolution, target_resolution]
-    
+
+    datasets_nomask = []
+    for d in datasets:
+        if not os.path.abspath(d.kvstore.path).endswith('_mask'):
+            datasets_nomask.append(d)
+
+    if len(datasets_nomask) == 1:
+        root_node = os.path.basename(os.path.abspath(datasets_nomask[0].kvstore.path))
+        ds_bounds = {root_node: (0, datasets_nomask[0].shape[0])}
+        return root_node, [[root_node]], [False], ds_bounds
+
     def _get_slice(store, z, reverse, target_resolution=target_resolution):
         resolution = get_store_attributes(store)['resolution']
         assert resolution[-2] == resolution[-1], 'Resolution must be the same in X and Y'
@@ -172,13 +182,13 @@ def compute_alignment_path(datasets,
         return resample(img, target_scale)
     
     # Find all ranges over which there is overlap
-    z_ranges = [np.arange(z[0], z[0] + ds.shape[0]) for z, ds in zip(z_offsets, datasets)]
+    z_ranges = [np.arange(z[0], z[0] + ds.shape[0]) for z, ds in zip(z_offsets, datasets_nomask)]
     unique_slices = sorted(np.unique(np.concatenate(z_ranges)).tolist())
     df = pd.DataFrame({'z': unique_slices, 
                     'ds_indices': [[] for _ in range(len(unique_slices))]
                         })
-    extend_list = lambda lst: lst + [datasets.index(ds)]
-    for ds, z_range in zip(datasets, z_ranges):
+    extend_list = lambda lst: lst + [datasets_nomask.index(ds)]
+    for ds, z_range in zip(datasets_nomask, z_ranges):
         df.loc[df.z.isin(z_range), 'ds_indices'] = df.loc[df.z.isin(z_range), 'ds_indices'].apply(extend_list)
     df['group'] = df['ds_indices'].ne(df['ds_indices'].shift()).cumsum()
 
@@ -187,7 +197,7 @@ def compute_alignment_path(datasets,
     for g, group in df.groupby('group'):
         # Find datasets to remove from that slice
         indices = np.unique(group.ds_indices.to_numpy())[0]
-        names = [datasets[i].kvstore.path.split('/')[-2] for i in indices]
+        names = [datasets_nomask[i].kvstore.path.split('/')[-2] for i in indices]
         
         ignore_indices = []
         for name in names:
@@ -205,7 +215,7 @@ def compute_alignment_path(datasets,
         raise RuntimeError('No potential root dataset was found: no dataset with no overlap along Z.')
 
     root_node_idx = root_datasets[0][0]
-    root_node = os.path.basename(os.path.abspath(datasets[root_node_idx].kvstore.path))
+    root_node = os.path.basename(os.path.abspath(datasets_nomask[root_node_idx].kvstore.path))
 
     # Compute valid alignment paths
     G = nx.Graph()
@@ -218,8 +228,8 @@ def compute_alignment_path(datasets,
         for u in curr_group.ds_indices.iloc[0]:
             for v in next_group.ds_indices.iloc[0]:
                 # Check for match at the boundary of the relevant range
-                ref = _get_slice(datasets[u], curr_group.z.max() - z_offsets[u, 0], reverse=True)
-                mov = _get_slice(datasets[v], next_group.z.min() - z_offsets[v, 0], reverse=False)
+                ref = _get_slice(datasets_nomask[u], curr_group.z.max() - z_offsets[u, 0], reverse=True)
+                mov = _get_slice(datasets_nomask[v], next_group.z.min() - z_offsets[v, 0], reverse=False)
                 M, out_shape, ref_offset, valid_estimate, _ = estimate_transform_sift(ref.copy(), mov.copy(), scale=scale, refine_estimate=True)
 
                 if valid_estimate:
@@ -228,19 +238,19 @@ def compute_alignment_path(datasets,
 
     if not nx.is_connected(G):
         # Some datasets are disconnected from the main alignment path
-        x = [[os.path.basename(os.path.abspath(datasets[i].kvstore.path)) for i in cc] for cc in nx.connected_components(G)]
+        x = [[os.path.basename(os.path.abspath(datasets_nomask[i].kvstore.path)) for i in cc] for cc in nx.connected_components(G)]
         raise RuntimeError(f'Some datasets are isolated: \n{x}')
 
     paths = extract_paths_from_root(G, root_node_idx)
     reverse_z = [bool(z_offsets[p[0], 0] > z_offsets[p[-1], 0]) for p in paths]
-    paths = [[os.path.basename(os.path.abspath(datasets[i].kvstore.path)) for i in p] for p in paths]
+    paths = [[os.path.basename(os.path.abspath(datasets_nomask[i].kvstore.path)) for i in p] for p in paths]
 
     # Datasets will need to be bounded to not re-use fused images
     ds_bounds = {}
     for i in np.unique(np.concatenate(df.ds_indices.to_numpy())):
         zmin = df.loc[df.ds_indices.apply(lambda l: i in l), 'z'].min() - z_offsets[i, 0]
         zmax = df.loc[df.ds_indices.apply(lambda l: i in l), 'z'].max() - z_offsets[i, 0] + 1  # Exclusive max
-        ds_bounds[os.path.basename(os.path.abspath(datasets[i].kvstore.path))] = (int(zmin), int(zmax))
+        ds_bounds[os.path.basename(os.path.abspath(datasets_nomask[i].kvstore.path))] = (int(zmin), int(zmax))
     return root_node, paths, reverse_z, ds_bounds
 
 

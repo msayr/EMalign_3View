@@ -44,6 +44,8 @@ class Stack:
         tile_paths = glob(os.path.join(self.stack_path, f'*{self.file_ext}'))
         if not tile_paths:
             tile_paths = glob(os.path.join(self.stack_path, '**', f'*{self.file_ext}'), recursive=True)
+        if hasattr(self.io_backend, 'include_tile_path'):
+            tile_paths = [p for p in tile_paths if self.io_backend.include_tile_path(self.stack_path, p)]
 
         # Get paths and group by slice
         self.slice_to_paths = defaultdict(list)

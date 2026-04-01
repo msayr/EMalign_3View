@@ -16,6 +16,8 @@ FILE_EXT = '.tif'
 
 _GRID_RE = re.compile(r'g(\d+)')
 _TILE_RE = re.compile(r't(\d+)')
+_GRID_DIR_RE = re.compile(r'^g\d+$')
+_TILE_DIR_RE = re.compile(r'^t\d+$')
 _SLICE_RE = re.compile(r'_s(\d+)\.')
 _ALLOWED_GRIDS_BY_STACK = {}
 
@@ -118,6 +120,13 @@ def include_tile_path(stack_path, tile_path):
     rel_path = os.path.relpath(tile_path, stack_path).replace('\\', '/')
     if not rel_path.startswith('tiles/'):
         return False
+    rel_parts = rel_path.split('/')
+
+    # Under <stack>/tiles/, only keep files stored inside g#### / t#### directories.
+    # Ignore side folders that may also contain TIFFs but are unrelated to alignment.
+    for directory in rel_parts[1:-1]:
+        if not (_GRID_DIR_RE.fullmatch(directory) or _TILE_DIR_RE.fullmatch(directory)):
+            return False
 
     allowed_grids = _ALLOWED_GRIDS_BY_STACK.get(os.path.abspath(stack_path))
     if allowed_grids is None:

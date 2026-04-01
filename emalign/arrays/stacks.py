@@ -38,8 +38,12 @@ class Stack:
         return self.stack_name
 
     def _get_tilemaps_paths(self):
-        # Produces lists of paths of all tifs contained in self.stack_path
+        # Produces lists of paths of all tiles contained in self.stack_path.
+        # Most formats keep tiles directly in stack_path, while others (e.g. SBEMimage)
+        # nest tiles in grid/tile subdirectories.
         tile_paths = glob(os.path.join(self.stack_path, f'*{self.file_ext}'))
+        if not tile_paths:
+            tile_paths = glob(os.path.join(self.stack_path, '**', f'*{self.file_ext}'), recursive=True)
 
         # Get paths and group by slice
         self.slice_to_paths = defaultdict(list)

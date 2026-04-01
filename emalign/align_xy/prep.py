@@ -91,6 +91,9 @@ def get_stacks(stack_paths,
             stack.tile_maps_invert[k]=invert_instructions[stack.stack_name]
         stacks.append(stack) 
 
+    # Order stacks by their first acquired slice, not by stack/folder names.
+    stacks = sorted(stacks, key=lambda s: s.slices[0] if len(s.slices) > 0 else float('inf'))
+
     # Split stacks if there are overlaps
     unique_slices = sorted(np.unique(np.concatenate([stack.slices for stack in stacks])).tolist())
     df = pd.DataFrame({'z': unique_slices, 
@@ -155,6 +158,7 @@ def get_stacks(stack_paths,
 
 def check_stacks_to_invert(stack_list, 
                            num_workers=1, 
+                           io_backend=None,
                            **kwargs):
 
     '''Check what stacks must be inverted
@@ -179,7 +183,9 @@ def check_stacks_to_invert(stack_list,
         fs = {}
         for stack_path in sorted(stack_list):
             stack_name = os.path.basename(os.path.normpath(stack_path))
-            tif_files = glob(os.path.join(stack_path, '*.tif'))
+            tif_files = glob(os.path.join(stack_path, '**', '*.tif'), recursive=True)
+            if io_backend is not None and hasattr(io_backend, 'include_tile_path'):
+                tif_files = [p for p in tif_files if io_backend.include_tile_path(stack_path, p)]
             if not tif_files:
                 logging.warning(f'No TIF files found in {stack_path}, skipping')
                 to_invert[stack_name] = False

@@ -113,10 +113,21 @@ def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
 
 def include_tile_path(stack_path, tile_path):
     """Whether a tile path belongs to one of the selected grids for this stack."""
+    # SBEMimage stores alignable tiles under <stack>/tiles/...
+    # Ignore TIFFs from other folders (workspace, overviews, etc.).
+    rel_path = os.path.relpath(tile_path, stack_path).replace('\\', '/')
+    if not rel_path.startswith('tiles/'):
+        return False
+
     allowed_grids = _ALLOWED_GRIDS_BY_STACK.get(os.path.abspath(stack_path))
     if allowed_grids is None:
         return True
-    grid_idx, _ = parse_yx_pos_from_name(tile_path)
+
+    try:
+        grid_idx, _ = parse_yx_pos_from_name(tile_path)
+    except ValueError:
+        return False
+
     return grid_idx in allowed_grids
 
 

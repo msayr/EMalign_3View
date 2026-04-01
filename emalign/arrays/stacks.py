@@ -1,4 +1,5 @@
 import json
+import ntpath
 import os
 import re
 
@@ -24,7 +25,14 @@ class Stack:
             self.stack_path = None
         
         if stack_path is not None and stack_name is None:
-            self.stack_name = stack_path.split('/')[-2]
+            # Use a cross-platform path parse and keep the folder name represented by stack_path.
+            # Previous logic used `split('/')[-2]`, which was brittle on Windows-style paths
+            # and could resolve to incorrect names (e.g. drive letters) depending on separators.
+            self.stack_name = os.path.basename(os.path.normpath(stack_path))
+            # On POSIX runtimes, Windows-style backslashes are not recognized as separators.
+            # Fall back to ntpath parsing so Windows-formatted paths are still handled.
+            if self.stack_name in (stack_path, os.path.normpath(stack_path)):
+                self.stack_name = ntpath.basename(ntpath.normpath(stack_path))
         else:
             self.stack_name = stack_name
 

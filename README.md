@@ -15,18 +15,20 @@ conda create -n myenv python=3.12
 conda activate myenv
 ```
 
-Install JAX with CUDA support to make use of GPU (recommended)
-```bash
-pip install jax[cuda12]   # Replace cuda12 with your version
-```
-
-Install dependencies
+Install core dependencies (works on Linux and Windows)
 ```bash
 pip install -r requirements.txt
 pip install -e .
 ```
 
-_Installation was tested on Ubuntu 20.04 with Python 3.12._
+If you are on Linux and want GPU acceleration, install a CUDA-enabled JAX wheel that matches your CUDA runtime:
+```bash
+pip install "jax[cuda12]"
+```
+
+Windows currently supports CPU JAX only in most setups, so keep the default `jax`/`jaxlib` installation from `requirements.txt`.
+
+_Installation is supported on Linux and Windows with Python 3.12+._
 
 ## Other requirements
 

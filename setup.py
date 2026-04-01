@@ -14,18 +14,23 @@ setup(
         long_description=LONG_DESCRIPTION,
         packages=find_packages(),
         install_requires=[
-            'numpy',
-            'pandas',
-            'networkx',
-            'opencv-python',
-            'tensorstore',
-            'scipy',
-            'pymongo',
-            'tqdm',
+            'numpy>=1.26,<2.3',
+            'pandas>=2.2',
+            'networkx>=3.2',
+            'opencv-python>=4.10,<5',
+            'tensorstore>=0.1.60',
+            'scipy>=1.12',
+            'pymongo>=4.6',
+            'tqdm>=4.66',
+            'jax>=0.4.30,<0.6',
+            'jaxlib>=0.4.30,<0.6',
             'sofima @ git+https://github.com/google-research/sofima.git@5c5642cded4b33ec7e975afc3d85f15c0126fb2e'
         ],
         extras_require={
-            'neuroglancer': ['neuroglancer']
+            'neuroglancer': ['neuroglancer>=2.41'],
+            'cuda12': [
+                'jax[cuda12]>=0.4.30,<0.6; platform_system=="Linux"'
+            ]
         },
         keywords=['python', 'alignment']
     )

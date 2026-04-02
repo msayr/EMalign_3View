@@ -130,6 +130,10 @@ def align_stack_xy(output_path,
             continue
         pbar.set_description(f'{stack.stack_name}: Loading tile_map...')
         tm = stack.get_tile_map(z, apply_gaussian, apply_clahe)
+        # SOFIMA coarse offset estimation assumes all tiles in a section share the
+        # same shape. Some datasets include edge tiles with +/-1 px differences,
+        # which can trigger shape-mismatch errors inside flow-field masking.
+        tm.homogenize_tile_shape()
         tile_map = tm.tile_map
         
         metadata = {}

@@ -5,6 +5,20 @@ import numpy as np
 
 from sofima import stitch_rigid, stitch_elastic, mesh, flow_utils
 
+def _fallback_overlap_windows(tile_map):
+    """Build conservative overlap candidates from tile dimensions."""
+    shapes = np.array([img.shape for img in tile_map.values()])
+    tile_h, tile_w = np.min(shapes, axis=0)
+
+    def _window(size):
+        # Test overlap around 10-30% of tile size.
+        cands = [int(size * 0.10), int(size * 0.20), int(size * 0.30)]
+        cands = [int(np.clip(v, 8, max(9, size - 1))) for v in cands]
+        return tuple(sorted(set(cands)))
+
+    return _window(tile_w), _window(tile_h)
+
+
 def get_coarse_offset(tile_map, 
                       tile_space,
                       overlap=None,
@@ -18,14 +32,15 @@ def get_coarse_offset(tile_map,
     last_err = None
     cx = cy = None
     tried_filter_sizes = []
-    # Ignore user-provided overlap and let SOFIMA choose overlap windows.
-    # It uses its defaults and grid placement to determine valid neighbors.
+    overlaps_xy = ((int(overlap),), (int(overlap),)) if overlap is not None else None
+
     for filter_size_candidate in (filter_size, 3, 1):
         tried_filter_sizes.append(filter_size_candidate)
         try:
             cx, cy = stitch_rigid.compute_coarse_offsets(
                 tile_space,
                 tile_map,
+                **({"overlaps_xy": overlaps_xy} if overlaps_xy is not None else {}),
                 min_range=min_range,
                 min_overlap=min_overlap,
                 filter_size=filter_size_candidate,
@@ -34,10 +49,27 @@ def get_coarse_offset(tile_map,
         except Exception as e:
             last_err = e
 
+    if (cx is None or cy is None) and overlap is None:
+        overlaps_xy = _fallback_overlap_windows(tile_map)
+        for filter_size_candidate in (filter_size, 3, 1):
+            tried_filter_sizes.append(filter_size_candidate)
+            try:
+                cx, cy = stitch_rigid.compute_coarse_offsets(
+                    tile_space,
+                    tile_map,
+                    overlaps_xy=overlaps_xy,
+                    min_range=min_range,
+                    min_overlap=min_overlap,
+                    filter_size=filter_size_candidate,
+                )
+                break
+            except Exception as e:
+                last_err = e
+
     if cx is None or cy is None:
         raise RuntimeError(
-            "Unable to compute coarse offsets using SOFIMA default overlap windows "
-            f"with tried filter_size values: {tried_filter_sizes}."
+            "Unable to compute coarse offsets with overlap windows "
+            f"{overlaps_xy} and tried filter_size values: {tried_filter_sizes}."
         ) from last_err
     
     # Figure out offset from neighbors if missing

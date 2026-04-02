@@ -19,7 +19,7 @@ _TILE_RE = re.compile(r't(\d+)')
 _GRID_DIR_RE = re.compile(r'^g\d+$')
 _TILE_DIR_RE = re.compile(r'^t\d+$')
 _SLICE_RE = re.compile(r'_s(\d+)\.')
-_ALLOWED_GRIDS_BY_STACK = {}
+_ALLOWED_GRID_TILES_BY_STACK = {}
 
 
 def _find_config_files(tileset_path):
@@ -40,21 +40,33 @@ def _read_grids_config(config_path):
     return parser['grids']
 
 
-def _get_matching_grids_from_config(config_path, target_resolution):
-    """Return active grid indices matching target XY resolution for one config."""
+def _parse_grids_list(grids_cfg, key, default='[]'):
+    try:
+        return ast.literal_eval(grids_cfg.get(key, default))
+    except (SyntaxError, ValueError):
+        raise ValueError(f'Failed parsing "{key}" value')
+
+
+def _get_matching_grid_tiles_from_config(config_path, target_resolution):
+    """Return active tiles per grid matching target XY resolution for one config."""
     grids_cfg = _read_grids_config(config_path)
     if grids_cfg is None:
-        return set()
+        return {}
 
     try:
-        pixel_size = ast.literal_eval(grids_cfg.get('pixel_size', '[]'))
-        grid_active = ast.literal_eval(grids_cfg.get('grid_active', '[]'))
-        active_tiles = ast.literal_eval(grids_cfg.get('active_tiles', '[]'))
-    except (SyntaxError, ValueError):
+        # SBEMimage grid parsing rules:
+        # - number_grids is ignored
+        # - pixel_size must match the requested user resolution for each grid
+        # - grid_active AND active_tiles determine if a grid/tile should be included
+        pixel_size = _parse_grids_list(grids_cfg, 'pixel_size')
+        grid_active = _parse_grids_list(grids_cfg, 'grid_active')
+        active_tiles = _parse_grids_list(grids_cfg, 'active_tiles')
+        size = _parse_grids_list(grids_cfg, 'size')
+    except ValueError:
         logging.warning(f'Failed to parse [grids] section in {config_path}')
-        return set()
+        return {}
 
-    matching_grids = set()
+    matching_grid_tiles = {}
     for i, is_active in enumerate(grid_active):
         if not is_active:
             continue
@@ -63,33 +75,41 @@ def _get_matching_grids_from_config(config_path, target_resolution):
         if i >= len(pixel_size):
             continue
         if int(round(float(pixel_size[i]))) == int(target_resolution):
-            matching_grids.add(i)
-    return matching_grids
+            tile_ids = {int(t) for t in active_tiles[i]}
+            if i < len(size) and len(size[i]) == 2:
+                n_rows, n_cols = (int(size[i][0]), int(size[i][1]))
+                max_tile_idx = max(0, n_rows * n_cols - 1)
+                tile_ids = {t for t in tile_ids if 0 <= t <= max_tile_idx}
+            if tile_ids:
+                matching_grid_tiles[i] = tile_ids
+    return matching_grid_tiles
 
 
 def get_tileset_resolution(tileset_path, resolution):
-    """Return stack path and matching active grid indices for requested resolution."""
+    """Return stack path and active grid->tile mapping for requested resolution."""
     config_files = _find_config_files(tileset_path)
     if not config_files:
         return None
 
     # Use ALL config files because acquisition settings can change between files.
-    matching_grids = set()
+    matching_grid_tiles = {}
     for config_path in config_files:
-        matching_grids.update(
-            _get_matching_grids_from_config(config_path, target_resolution=resolution[0])
-        )
+        for grid_idx, tile_ids in _get_matching_grid_tiles_from_config(
+            config_path,
+            target_resolution=resolution[0],
+        ).items():
+            matching_grid_tiles.setdefault(grid_idx, set()).update(tile_ids)
 
-    if not matching_grids:
+    if not matching_grid_tiles:
         return None
 
-    return (tileset_path, matching_grids)
+    return (tileset_path, matching_grid_tiles)
 
 
 def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
     """Find stack directories with SBEMimage tile+metadata structure."""
     stack_dirs = glob(os.path.join(main_dir, '*', ''))
-    _ALLOWED_GRIDS_BY_STACK.clear()
+    _ALLOWED_GRID_TILES_BY_STACK.clear()
 
     stack_list = []
     with futures.ThreadPoolExecutor(num_workers) as tpe:
@@ -107,7 +127,7 @@ def get_tilesets(main_dir, resolution, dir_pattern, num_workers):
 
             stack_name = os.path.basename(os.path.normpath(result[0]))
             if not dir_pattern or any(p in stack_name for p in dir_pattern):
-                _ALLOWED_GRIDS_BY_STACK[os.path.abspath(result[0])] = result[1]
+                _ALLOWED_GRID_TILES_BY_STACK[os.path.abspath(result[0])] = result[1]
                 stack_list.append(result[0])
 
     return sorted(stack_list)
@@ -128,16 +148,19 @@ def include_tile_path(stack_path, tile_path):
         if not (_GRID_DIR_RE.fullmatch(directory) or _TILE_DIR_RE.fullmatch(directory)):
             return False
 
-    allowed_grids = _ALLOWED_GRIDS_BY_STACK.get(os.path.abspath(stack_path))
-    if allowed_grids is None:
+    allowed_grid_tiles = _ALLOWED_GRID_TILES_BY_STACK.get(os.path.abspath(stack_path))
+    if allowed_grid_tiles is None:
         return True
 
     try:
-        grid_idx, _ = parse_yx_pos_from_name(tile_path)
+        grid_idx, tile_idx = parse_yx_pos_from_name(tile_path)
     except ValueError:
         return False
 
-    return grid_idx in allowed_grids
+    if grid_idx not in allowed_grid_tiles:
+        return False
+
+    return tile_idx in allowed_grid_tiles[grid_idx]
 
 
 def parse_yx_pos_from_name(n):

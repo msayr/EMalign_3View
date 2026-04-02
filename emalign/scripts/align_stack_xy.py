@@ -136,33 +136,27 @@ def align_stack_xy(output_path,
         if len(tile_map) > 1:
             # There are more than one tiles    
             pbar.set_description(f'{stack.stack_name}: Computing elastic meshes...')
-            cx, cy, coarse_mesh, overlap = get_coarse_offset(
+            cx, cy, coarse_mesh = get_coarse_offset(
                 tile_map,
                 tm.tile_space,
                 overlap=None,
             )
+            # Use a single robust parameter set and avoid overlap-driven branching.
+            render_stride = stride
+            patch_size = 160
+            k0 = 0.01
+            k = 0.1
+            gamma = 0.5
 
-            if overlap > 160:
-                # Generally good parameters
-                render_stride=stride
-                patch_size = 160
-                k0 = 0.01
-                k = 0.1
-                gamma = 0.5
-
-                # Determine margin by finding the minimum displacement in X or Y between adjacent tiles
-                # Margin is how many pixels to ignore from the tiles when rendering. Too high leaves a delimitation, too low leaves a gap
-                min_displacement = np.abs(np.concatenate([cx[0,0,0,:][~np.isnan(cx[0,0,0,:])], 
-                                                          cy[1,0,0,:][~np.isnan(cy[1,0,0,:])]])).min()
-                margin = min(200, int(min_displacement // 2 * 0.9))
+            # Determine margin by finding the minimum displacement in X or Y between adjacent tiles
+            # Margin is how many pixels to ignore from the tiles when rendering. Too high leaves a delimitation, too low leaves a gap
+            valid_disp = np.abs(np.concatenate([cx[0,0,0,:][~np.isnan(cx[0,0,0,:])], 
+                                                cy[1,0,0,:][~np.isnan(cy[1,0,0,:])]]))
+            if valid_disp.size > 0:
+                min_displacement = valid_disp.min()
+                margin = min(200, max(10, int(min_displacement // 2 * 0.9)))
             else:
-                # Parameters tested for very small overlap
-                render_stride=10
-                patch_size=30
-                k0=0.07
-                k=0.2
-                gamma=0.5
-                margin=10
+                margin = 10
             
             meshes = get_elastic_mesh(tile_map, 
                                       cx, 
@@ -189,7 +183,6 @@ def align_stack_xy(output_path,
                                 'k':k,
                                 'gamma':gamma
                                     },
-                'overlap': overlap,
                 'margin': margin,
                 'stitch_score': float(np.median(stitch_score)),
                 'tile_space': list(map(int, tm.tile_space)),

@@ -5,10 +5,24 @@ import numpy as np
 
 from sofima import stitch_rigid, stitch_elastic, mesh, flow_utils
 
+def _default_overlap_candidates(tile_shape):
+    """Generate robust overlap candidates from tile shape only."""
+    min_dim = int(min(tile_shape[:2]))
+    max_valid_overlap = max(2, min_dim - 1)
+
+    # Start with conservative fractions of tile size, then include a fixed fallback.
+    fractions = [0.10, 0.15, 0.20, 0.25, 0.30]
+    candidates = {max(2, min(int(min_dim * f), max_valid_overlap)) for f in fractions}
+    candidates.add(max(2, min(128, max_valid_overlap)))
+
+    # Ignore overlaps that leave almost no context for matching.
+    candidates = [c for c in candidates if c < max_valid_overlap]
+    return sorted(set(candidates))
+
 
 def get_coarse_offset(tile_map, 
                       tile_space,
-                      overlap,
+                      overlap=None,
                       min_range=(10,100,0),
                       min_overlap=5,
                       filter_size=5):
@@ -16,32 +30,45 @@ def get_coarse_offset(tile_map,
     Compute coarse offset and mesh for initial rigid XY alignment
     '''
     
-    # Normalize overlap candidates to avoid pathological (e.g. 1 px) widths.
-    # Very small overlap crops can trigger shape edge-cases in sofima flow
-    # computation and are not meaningful for robust matching anyway.
-    if np.isscalar(overlap):
+    tile_shape = next(iter(tile_map.values())).shape[:2]
+
+    if overlap is None:
+        overlap_candidates = _default_overlap_candidates(tile_shape)
+    elif np.isscalar(overlap):
         overlap_candidates = [int(overlap)]
     else:
         overlap_candidates = [int(o) for o in overlap]
 
-    tile_h, tile_w = next(iter(tile_map.values())).shape[:2]
-    max_valid_overlap = max(2, min(tile_h, tile_w) - 1)
+    max_valid_overlap = max(2, min(tile_shape) - 1)
     overlap_candidates = sorted({
         max(2, min(int(o), max_valid_overlap))
         for o in overlap_candidates
         if int(o) > 0
     })
     if not overlap_candidates:
-        fallback = max(2, min(max_valid_overlap, int(min(tile_h, tile_w) * 0.1)))
-        overlap_candidates = [fallback]
+        overlap_candidates = _default_overlap_candidates(tile_shape)
 
-    # Coarse rigid offset between tiles
-    cx, cy = stitch_rigid.compute_coarse_offsets(tile_space, 
-                                                 tile_map, 
-                                                 overlaps_xy=(tuple(overlap_candidates), tuple(overlap_candidates)),
-                                                 min_range=min_range,
-                                                 min_overlap=min_overlap,
-                                                 filter_size=filter_size)
+    last_err = None
+    cx = cy = None
+    for candidate in overlap_candidates:
+        try:
+            cx, cy = stitch_rigid.compute_coarse_offsets(
+                tile_space,
+                tile_map,
+                overlaps_xy=((candidate,), (candidate,)),
+                min_range=min_range,
+                min_overlap=min_overlap,
+                filter_size=filter_size,
+            )
+            overlap_candidates = [candidate]
+            break
+        except Exception as e:
+            last_err = e
+
+    if cx is None or cy is None:
+        raise RuntimeError(
+            f"Unable to compute coarse offsets for overlaps {overlap_candidates}."
+        ) from last_err
     
     # Figure out offset from neighbors if missing
     cx = stitch_rigid.interpolate_missing_offsets(cx, -1)
@@ -51,7 +78,7 @@ def get_coarse_offset(tile_map,
 
     coarse_mesh = stitch_rigid.optimize_coarse_mesh(cx, cy)
 
-    return cx, cy, coarse_mesh
+    return cx, cy, coarse_mesh, overlap_candidates[0]
             
 
 def get_elastic_mesh(tile_map, 

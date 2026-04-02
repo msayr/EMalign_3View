@@ -1,5 +1,4 @@
 import os
-import cv2
 import numpy as np
 import tensorstore as ts
 from typing import List, Optional, Union

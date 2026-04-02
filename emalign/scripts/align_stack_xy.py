@@ -135,21 +135,12 @@ def align_stack_xy(output_path,
         metadata = {}
         if len(tile_map) > 1:
             # There are more than one tiles    
-            for scale in [0.1, 0.2, 0.5, 1]:
-                overlap = tm.estimate_overlap(scale=scale)
-                if overlap > 0:
-                    break
-            else:
-                raise RuntimeError('No overlap found between tiles for this slice.')
-
             pbar.set_description(f'{stack.stack_name}: Computing elastic meshes...')
-            # Compute overlap for better coarse mesh estimation
-            overlap_pad = 80
-            cx, cy, coarse_mesh = get_coarse_offset(tile_map, 
-                                                    tm.tile_space,
-                                                    overlap=[overlap,               # try first
-                                                             overlap+overlap_pad]   # try second
-                                                   )
+            cx, cy, coarse_mesh, overlap = get_coarse_offset(
+                tile_map,
+                tm.tile_space,
+                overlap=None,
+            )
 
             if overlap > 160:
                 # Generally good parameters

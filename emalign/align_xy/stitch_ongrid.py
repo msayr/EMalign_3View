@@ -6,14 +6,17 @@ import numpy as np
 from sofima import stitch_rigid, stitch_elastic, mesh, flow_utils
 
 def _default_overlap_candidates(tile_shape):
-    """Generate robust overlap candidates from tile shape only."""
+    """Generate conservative overlap candidates that avoid SOFIMA edge cases."""
     min_dim = int(min(tile_shape[:2]))
     max_valid_overlap = max(2, min_dim - 1)
 
-    # Start with conservative fractions of tile size, then include a fixed fallback.
-    fractions = [0.10, 0.15, 0.20, 0.25, 0.30]
-    candidates = {max(2, min(int(min_dim * f), max_valid_overlap)) for f in fractions}
-    candidates.add(max(2, min(128, max_valid_overlap)))
+    # Prefer moderate overlap windows first. Very large windows can trigger
+    # shape mismatches in some SOFIMA versions during mask selection.
+    base = [32, 48, 64, 96, 128, 160, 192, 256]
+    candidates = [max(2, min(v, max_valid_overlap)) for v in base]
+
+    # Add one data-dependent candidate while keeping it bounded.
+    candidates.append(max(2, min(int(min_dim * 0.1), max_valid_overlap, 256)))
 
     # Ignore overlaps that leave almost no context for matching.
     candidates = [c for c in candidates if c < max_valid_overlap]
@@ -50,24 +53,31 @@ def get_coarse_offset(tile_map,
 
     last_err = None
     cx = cy = None
+    tried = []
     for candidate in overlap_candidates:
-        try:
-            cx, cy = stitch_rigid.compute_coarse_offsets(
-                tile_space,
-                tile_map,
-                overlaps_xy=((candidate,), (candidate,)),
-                min_range=min_range,
-                min_overlap=min_overlap,
-                filter_size=filter_size,
-            )
-            overlap_candidates = [candidate]
+        # Retry each overlap with progressively smaller local contrast windows.
+        # This mitigates occasional boolean-mask shape mismatches in SOFIMA.
+        for filter_size_candidate in (filter_size, 3, 1):
+            tried.append((candidate, filter_size_candidate))
+            try:
+                cx, cy = stitch_rigid.compute_coarse_offsets(
+                    tile_space,
+                    tile_map,
+                    overlaps_xy=((candidate,), (candidate,)),
+                    min_range=min_range,
+                    min_overlap=min_overlap,
+                    filter_size=filter_size_candidate,
+                )
+                overlap_candidates = [candidate]
+                break
+            except Exception as e:
+                last_err = e
+        if cx is not None and cy is not None:
             break
-        except Exception as e:
-            last_err = e
 
     if cx is None or cy is None:
         raise RuntimeError(
-            f"Unable to compute coarse offsets for overlaps {overlap_candidates}."
+            f"Unable to compute coarse offsets for tried (overlap, filter_size) pairs: {tried}."
         ) from last_err
     
     # Figure out offset from neighbors if missing

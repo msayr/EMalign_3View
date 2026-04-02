@@ -16,10 +16,29 @@ def get_coarse_offset(tile_map,
     Compute coarse offset and mesh for initial rigid XY alignment
     '''
     
+    # Normalize overlap candidates to avoid pathological (e.g. 1 px) widths.
+    # Very small overlap crops can trigger shape edge-cases in sofima flow
+    # computation and are not meaningful for robust matching anyway.
+    if np.isscalar(overlap):
+        overlap_candidates = [int(overlap)]
+    else:
+        overlap_candidates = [int(o) for o in overlap]
+
+    tile_h, tile_w = next(iter(tile_map.values())).shape[:2]
+    max_valid_overlap = max(2, min(tile_h, tile_w) - 1)
+    overlap_candidates = sorted({
+        max(2, min(int(o), max_valid_overlap))
+        for o in overlap_candidates
+        if int(o) > 0
+    })
+    if not overlap_candidates:
+        fallback = max(2, min(max_valid_overlap, int(min(tile_h, tile_w) * 0.1)))
+        overlap_candidates = [fallback]
+
     # Coarse rigid offset between tiles
     cx, cy = stitch_rigid.compute_coarse_offsets(tile_space, 
                                                  tile_map, 
-                                                 overlaps_xy=((overlap),(overlap)),
+                                                 overlaps_xy=(tuple(overlap_candidates), tuple(overlap_candidates)),
                                                  min_range=min_range,
                                                  min_overlap=min_overlap,
                                                  filter_size=filter_size)

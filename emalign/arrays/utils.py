@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
 
-from emalign.io.process.mask import mask_to_bbox
-
 def resample(array, ratio):
     '''
     Resize an array by a scaling ratio using OpenCV interpolation.
@@ -213,6 +211,8 @@ def compute_laplacian_var(arr, mask=None):
         l = cv2.Laplacian(arr, cv2.CV_64F)
         return np.var(l)
 
+    from emalign.io.process.mask import mask_to_bbox
+
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
     ymin, ymax, xmin, xmax = mask_to_bbox(mask)
@@ -255,6 +255,8 @@ def compute_sobel_mean(arr, mask=None):
         sobel_y = cv2.Sobel(arr, cv2.CV_64F, 0, 1, ksize=5)
         sobel = np.sqrt(sobel_x**2 + sobel_y**2)
         return np.mean(sobel)
+
+    from emalign.io.process.mask import mask_to_bbox
 
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
@@ -300,6 +302,8 @@ def compute_grad_mag(arr, mask=None):
         gy, gx = np.gradient(arr)
         gnorm = np.sqrt(gx**2 + gy**2)
         return np.average(gnorm)
+
+    from emalign.io.process.mask import mask_to_bbox
 
     # cv2 needs 2D array so masking needs to happen after computation
     # Crop to relevant bbox to limit computations
